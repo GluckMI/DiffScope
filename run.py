@@ -15,7 +15,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+# PyInstaller 冻结模式下 __file__ 指向临时解包目录，改用 exe 所在目录
+if getattr(sys, "frozen", False):
+    ROOT = Path(sys.executable).resolve().parent
+else:
+    ROOT = Path(__file__).resolve().parent
 BOOT_MARKER = "DIFFSCOPE_BOOTSTRAPPED"
 MIN_QT = (6, 6)
 

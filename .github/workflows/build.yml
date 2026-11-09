@@ -1,0 +1,98 @@
+name: Build Release Packages
+
+# 触发：手动运行，或推送 v* 标签
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "PySide6>=6.6" pyinstaller Pillow openpyxl PyPDF2 requests
+      - name: Build macOS app bundle
+        run: |
+          python -m PyInstaller --noconfirm --clean \
+            --name DiffScope \
+            --windowed \
+            --icon packaging/icon_256.png \
+            --exclude-module PyQt5 --exclude-module tkinter \
+            --exclude-module QtWebEngineCore --exclude-module QtWebEngineWidgets \
+            --exclude-module QtQml --exclude-module QtQuick --exclude-module QtQuick3D \
+            --exclude-module QtMultimedia --exclude-module QtCharts \
+            --exclude-module QtDataVisualization --exclude-module QtNetworkAuth \
+            --exclude-module QtSensors --exclude-module QtSerialPort \
+            --exclude-module QtTest --exclude-module QtDesigner \
+            run.py
+      - name: Verify bundle
+        run: |
+          ls -la dist/DiffScope.app/Contents/MacOS/
+          ./dist/DiffScope.app/Contents/MacOS/DiffScope --version || true
+      - name: Zip app bundle
+        run: |
+          cd dist
+          zip -qry DiffScope-macos.zip DiffScope.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DiffScope-macos
+          path: dist/DiffScope-macos.zip
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "PySide6>=6.6" pyinstaller Pillow openpyxl PyPDF2 requests
+      - name: Build Windows exe
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean `
+            --name DiffScope --windowed --icon packaging/icon.ico `
+            --exclude-module PyQt5 --exclude-module tkinter `
+            --exclude-module QtWebEngineCore --exclude-module QtWebEngineWidgets `
+            --exclude-module QtQml --exclude-module QtQuick --exclude-module QtQuick3D `
+            --exclude-module QtMultimedia --exclude-module QtCharts `
+            --exclude-module QtDataVisualization --exclude-module QtNetworkAuth `
+            --exclude-module QtSensors --exclude-module QtSerialPort `
+            --exclude-module QtTest --exclude-module QtDesigner `
+            run.py
+      - name: Verify executable
+        run: |
+          .\dist\DiffScope\DiffScope.exe --version
+      - name: Zip distribution
+        shell: pwsh
+        run: Compress-Archive -Path 'dist\DiffScope\*' -DestinationPath 'dist\DiffScope-windows-x64.zip' -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DiffScope-windows-x64
+          path: dist/DiffScope-windows-x64.zip
+
+  release:
+    needs: [build-macos, build-windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Attach packages to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/DiffScope-macos/DiffScope-macos.zip
+            artifacts/DiffScope-windows-x64/DiffScope-windows-x64.zip
