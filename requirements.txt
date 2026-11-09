@@ -1,0 +1,8 @@
+# 必需：界面框架
+PySide6>=6.6
+
+# 可选增强（缺失时对应功能自动降级并给出明确提示，核心比较不受影响）
+requests>=2.28      # FTP 之外的网络数据源：WebDAV / S3 / Dropbox / OneDrive / SVN
+Pillow>=9.0         # 图片比较
+openpyxl>=3.1       # Excel .xlsx 多工作表读取（缺失时用 zipfile + XML 回退）
+PyPDF2>=3.0         # PDF 转文本

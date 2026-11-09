@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# 应用本地数据（便携模式 / 运行残留）
+Data/
+*.log
+
+# 助手工作区笔记（本地）
+.workbuddy/
+
+# IDE 本地配置
+.idea/
+.vscode/
+
+# 打包产物
+build/
+dist/
+*.spec
