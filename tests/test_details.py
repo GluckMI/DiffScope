@@ -634,5 +634,107 @@ class TestDisplayFilter(unittest.TestCase):
         self.assertFalse(view.left_edit.isReadOnly())
 
 
+class TestLineInfoPanel(unittest.TestCase):
+    """底部行内容栏：显示光标所在行两侧的对应内容。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="ds-lineinfo-")
+        self.root = Path(self._tmp.name)
+        self.f1 = self.root / "a.txt"
+        self.f2 = self.root / "b.txt"
+        self.f1.write_text("alpha\nCHANGED-L\nsame\nonly-left\ntail\n", encoding="utf-8")
+        self.f2.write_text("alpha\nCHANGED-R\nsame\ntail\n", encoding="utf-8")
+        self.warnings: list[str] = []
+        self._patches = []
+        for target, value in (
+            ("app.ui.main_window.show_warning", lambda *a, **k: self.warnings.append(a[1] if len(a) > 1 else "")),
+            ("app.ui.main_window.last_session_path", lambda: self.root / "no-last.json"),
+            ("app.ui.main_window.save_last_session", lambda *a, **k: None),
+        ):
+            patcher = mock.patch(target, value)
+            patcher.start()
+            self._patches.append(patcher)
+        from app.ui.main_window import MainWindow
+
+        self.window = MainWindow()
+        self.app.processEvents()
+
+    def tearDown(self) -> None:
+        for patcher in self._patches:
+            patcher.stop()
+        self.window.close()
+        self._tmp.cleanup()
+
+    def _load(self):
+        view = self.window.file_view
+        seq0 = view._load_seq
+        view.load_pair_async(str(self.f1), str(self.f2), None)
+        waited = 0
+        while view._load_seq == seq0 and waited < 8000:
+            self.app.processEvents(); time.sleep(0.01); waited += 10
+        while view._async_thread is not None and waited < 8000:
+            self.app.processEvents(); time.sleep(0.01); waited += 10
+        self.app.processEvents()
+
+    def _set_cursor(self, editor, display_row: int) -> None:
+        from PySide6.QtGui import QTextCursor
+
+        block = editor.document().findBlockByNumber(display_row)
+        editor.setTextCursor(QTextCursor(block))
+        self.app.processEvents()
+
+    def test_shows_current_line_both_sides(self) -> None:
+        self._load()
+        view = self.window.file_view
+        # 加载后光标停在首个差异块（第 2 行）
+        self.assertIn("CHANGED-L", view.line_info_left.text())
+        self.assertIn("CHANGED-R", view.line_info_right.text())
+        # 光标移到第 1 行：两侧都是 same 行 alpha
+        self._set_cursor(view.left_edit, 0)
+        self.assertIn("左 1：alpha", view.line_info_left.text())
+        self.assertIn("右 1：alpha", view.line_info_right.text())
+        # 光标移到替换行：左 2 / 右 2，内容分别为 CHANGED-L / CHANGED-R
+        rows = view.left_edit.rows
+        changed = next(i for i, r in enumerate(rows) if r.left_text == "CHANGED-L")
+        self._set_cursor(view.left_edit, changed)
+        self.assertIn("左 2：CHANGED-L", view.line_info_left.text())
+        self.assertIn("右 2：CHANGED-R", view.line_info_right.text())
+
+    def test_placeholder_side_reports_missing(self) -> None:
+        self._load()
+        view = self.window.file_view
+        rows = view.left_edit.rows
+        only_left = next(i for i, r in enumerate(rows) if r.left_text == "only-left")
+        self._set_cursor(view.left_edit, only_left)
+        self.assertIn("左 4：only-left", view.line_info_left.text())
+        self.assertIn("该侧没有对应内容", view.line_info_right.text())
+
+    def test_right_pane_cursor_updates_active_row(self) -> None:
+        self._load()
+        view = self.window.file_view
+        self._set_cursor(view.right_edit, 4)  # 右侧编辑器 block 4 = tail（block 3 是占位行）
+        self.assertIn("右 4：tail", view.line_info_right.text())
+        self.assertIn("左 5：tail", view.line_info_left.text())
+
+    def test_load_error_resets_labels(self) -> None:
+        from app.core.errors import DiffScopeError
+
+        self._load()
+        view = self.window.file_view
+        self._set_cursor(view.left_edit, 1)
+        self.assertIn("CHANGED-L", view.line_info_left.text())
+        with mock.patch("app.ui.file_view.show_error"):
+            view._show_load_error(DiffScopeError("读取失败", "测试错误"))
+        self.app.processEvents()
+        self.assertEqual(view.line_info_left.text(), "左：—")
+        self.assertEqual(view.line_info_right.text(), "右：—")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

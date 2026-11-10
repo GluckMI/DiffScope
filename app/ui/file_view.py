@@ -257,6 +257,27 @@ class FileCompareView(QWidget):
         legend.addStretch(1)
         root.addLayout(legend)
 
+        # 底部行内容栏：显示光标所在行在两侧的对应内容（各一行）
+        info = QFrame()
+        info.setStyleSheet(f"background: {PANEL}; border: 1px solid {BORDER}; border-radius: 4px;")
+        info_layout = QVBoxLayout(info)
+        info_layout.setContentsMargins(8, 4, 8, 4)
+        info_layout.setSpacing(2)
+        self.line_info_left = QLabel("左：—")
+        self.line_info_right = QLabel("右：—")
+        for label in (self.line_info_left, self.line_info_right):
+            label.setStyleSheet("color: #dfe2e8; border: none;")
+            info_layout.addWidget(label)
+        root.addWidget(info)
+        self.line_info_frame = info
+
+        # 以最近移动过光标的一侧定位当前行；goto_row / 加载后移动光标也会触发刷新
+        self._active_editor = self.left_edit
+        self.left_edit.cursorPositionChanged.connect(
+            lambda: self._update_line_info(self.left_edit))
+        self.right_edit.cursorPositionChanged.connect(
+            lambda: self._update_line_info(self.right_edit))
+
     def _make_panel(self, title: str, editor: DiffTextEdit, side: str) -> QWidget:
         panel = QFrame()
         layout = QVBoxLayout(panel)
@@ -413,6 +434,7 @@ class FileCompareView(QWidget):
         label = rel_hint or (self.left_path.name if self.left_path else self.right_path.name if self.right_path else "")
         state = "两侧内容一致" if result.identical else f"发现 {len(self.blocks)} 处差异"
         self.status_message.emit(f"文本对比：{label} — {state}")
+        self._update_line_info()
 
 
 
@@ -456,6 +478,8 @@ class FileCompareView(QWidget):
         self.blocks = []
         self.current_block = -1
         self.counter.setText("差异 0 / 0")
+        self.line_info_left.setText("左：—")
+        self.line_info_right.setText("右：—")
         self.status_message.emit(f"文本读取失败：{exc.message}")
         show_error(self, exc, "打开文本对比")
 
@@ -628,6 +652,33 @@ class FileCompareView(QWidget):
             "same": f"显示过滤：仅相同段，共 {len(rows)} 行；只读，切回「全部」可编辑",
         }[self._display_filter]
         self.status_message.emit(hint)
+
+    # ---- 底部行内容栏 ----------------------------------------------
+    def _update_line_info(self, editor: DiffTextEdit | None = None) -> None:
+        """显示光标所在行两侧的对应内容；以最近移动过光标的一侧定位。
+
+        过滤模式下 editor.rows 是显示行，DiffLine 上的行号/文本仍是原始数据，天然兼容。
+        """
+        if editor is None:
+            editor = self._active_editor
+        else:
+            self._active_editor = editor
+        row_no = editor.current_row()
+        rows = editor.rows
+        if not rows or not (0 <= row_no < len(rows)):
+            self.line_info_left.setText("左：—")
+            self.line_info_right.setText("右：—")
+            return
+        row = rows[row_no]
+        self.line_info_left.setText(f"左 {row.left_no or '—'}：{self._clip(row.left_text)}")
+        self.line_info_right.setText(f"右 {row.right_no or '—'}：{self._clip(row.right_text)}")
+
+    @staticmethod
+    def _clip(text: str | None) -> str:
+        if text is None:
+            return "（该侧没有对应内容）"
+        text = text.expandtabs(4)
+        return text if len(text) <= 200 else text[:200] + " …"
 
     def _set_filter_actions_enabled(self, enabled: bool) -> None:
         for btn in (self.btn_merge_l2r, self.btn_merge_r2l, self.btn_all_l2r,
@@ -880,6 +931,8 @@ class FileCompareView(QWidget):
             editor.setFont(QFont(family, size))
             editor.set_word_wrap(bool(settings.get("word_wrap")))
             editor.set_line_numbers_visible(bool(settings.get("show_line_numbers")))
+        for label in (self.line_info_left, self.line_info_right):
+            label.setFont(QFont(family, size))
         if self.result:
             self._apply_result(self.result)
 
