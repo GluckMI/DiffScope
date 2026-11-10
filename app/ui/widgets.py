@@ -281,10 +281,11 @@ class DiffTextEdit(QPlainTextEdit):
         self.highlighter.matches = {}
         lines: list[str] = []
         self._placeholder.clear()
-        for row in result.rows:
+        for position, row in enumerate(result.rows):
             text = row.left_text if self.side == "left" else row.right_text
             if text is None:
-                self._placeholder.add(row.index)
+                # 占位集合按文档块号记录（过滤模式下 row.index 是原始行号，不能直接用）
+                self._placeholder.add(position)
                 lines.append("")
             else:
                 lines.append(text)
@@ -392,15 +393,17 @@ class DiffTextEdit(QPlainTextEdit):
                 selections.append(self._base_selection(cursor, group_color))
             group_start = group_color = group_end = None
 
-        for row in self.rows:
-            if row.index >= doc.blockCount():
+        # self.rows 与文档块一一对应（过滤模式下是子集），必须按枚举位置找块；
+        # row.index 是原始行号，在过滤视图里会定位到错误的块（曾导致差异行无高亮）
+        for position, row in enumerate(self.rows):
+            if position >= doc.blockCount():
                 continue
             background = _row_background(row, self.side)
             if not background:
                 flush()
                 continue
-            color = _mix(background, CURRENT_BLOCK, 0.30) if row.index in self._current else QColor(background)
-            block = doc.findBlockByNumber(row.index)
+            color = _mix(background, CURRENT_BLOCK, 0.30) if position in self._current else QColor(background)
+            block = doc.findBlockByNumber(position)
             if group_start is None:
                 group_start, group_color, group_end = block, color, block
             elif color == group_color and block.blockNumber() == group_end.blockNumber() + 1:
@@ -563,10 +566,11 @@ class Minimap(QWidget):
         painter = QPainter(self)
         painter.fillRect(event.rect(), QColor(LINE_NUMBER_BG))
         height = max(2, self.height() - 4)
-        for row in self._rows:
+        # 与文档一致按枚举位置定位（过滤模式下 row.index 是原始行号，比例会错位）
+        for position, row in enumerate(self._rows):
             if not row.is_diff:
                 continue
-            y = 2 + int(row.index / self._total * height)
+            y = 2 + int(position / self._total * height)
             status = (DiffStatus.MODIFIED if row.op == "replace" else
                       DiffStatus.LEFT_ONLY if row.op == "delete" else DiffStatus.RIGHT_ONLY)
             painter.fillRect(2, y, self.width() - 4, 3, QColor(STATUS_COLORS[status][0]))

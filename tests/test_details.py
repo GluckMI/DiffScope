@@ -755,5 +755,89 @@ class TestSyntaxHighlight(unittest.TestCase):
         self.assertEqual(editor.highlighter.language, "python")
 
 
+class TestFilteredHighlight(unittest.TestCase):
+    """过滤模式回归：差异行整行高亮与占位行号必须跟随显示位置而非原始行号。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="ds-fhighlight-")
+        self.root = Path(self._tmp.name)
+        self.f1 = self.root / "a.txt"
+        self.f2 = self.root / "b.txt"
+        left = [f"same {i}" for i in range(20)]
+        right = list(left)
+        left[5] = "CHANGED-L"
+        right[5] = "CHANGED-R"
+        left.insert(12, "only-left")
+        right[10] = "replaced-right"
+        self.f1.write_text("\n".join(left) + "\n", encoding="utf-8")
+        self.f2.write_text("\n".join(right) + "\n", encoding="utf-8")
+        self._patches = []
+        for target, value in (
+            ("app.ui.main_window.show_warning", lambda *a, **k: None),
+            ("app.ui.main_window.last_session_path", lambda: self.root / "no-last.json"),
+            ("app.ui.main_window.save_last_session", lambda *a, **k: None),
+        ):
+            patcher = mock.patch(target, value)
+            patcher.start()
+            self._patches.append(patcher)
+        from app.ui.main_window import MainWindow
+
+        self.window = MainWindow()
+        self.app.processEvents()
+
+    def tearDown(self) -> None:
+        for patcher in self._patches:
+            patcher.stop()
+        self.window.close()
+        self._tmp.cleanup()
+
+    def _load(self):
+        view = self.window.file_view
+        seq0 = view._load_seq
+        view.load_pair_async(str(self.f1), str(self.f2), None)
+        waited = 0
+        while view._load_seq == seq0 and waited < 8000:
+            self.app.processEvents(); time.sleep(0.01); waited += 10
+        while view._async_thread is not None and waited < 8000:
+            self.app.processEvents(); time.sleep(0.01); waited += 10
+        self.app.processEvents()
+
+    def test_diff_rows_highlighted_in_filtered_view(self) -> None:
+        self._load()
+        view = self.window.file_view
+        view.set_display_filter("differences")
+        self.app.processEvents()
+        rows = view.left_edit.rows
+        changed = next(i for i, r in enumerate(rows) if r.left_text == "CHANGED-L")
+        plain = next(i for i, r in enumerate(rows) if r.op == "equal")
+        covered: set[int] = set()
+        for sel in view.left_edit.extraSelections():
+            cursor = sel.cursor
+            if cursor.isNull():
+                continue
+            first = view.left_edit.document().findBlock(cursor.selectionStart()).blockNumber()
+            last = view.left_edit.document().findBlock(cursor.selectionEnd()).blockNumber()
+            covered.update(range(first, last + 1))
+        self.assertIn(changed, covered)
+        self.assertNotIn(plain, covered)
+
+    def test_placeholder_positions_in_filtered_view(self) -> None:
+        self._load()
+        view = self.window.file_view
+        view.set_display_filter("differences")
+        self.app.processEvents()
+        rows = view.left_edit.rows
+        only_left = next(i for i, r in enumerate(rows) if r.left_text == "only-left")
+        # only-left 行右侧缺内容 → 占位应记在右编辑器（按显示块号 10）
+        self.assertIn(only_left, view.right_edit._placeholder)
+        self.assertNotIn(only_left, view.left_edit._placeholder)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

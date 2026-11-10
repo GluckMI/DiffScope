@@ -549,6 +549,9 @@ class FileCompareView(QWidget):
             return False
         self.current_block = index
         rows = set(self.blocks[index])
+        if self._display_filter != "all":
+            # 编辑器按文档块号定位高亮，过滤模式下需换算成显示位置
+            rows = {self._display_positions[r] for r in rows if r in self._display_positions}
         self.left_edit.set_current_block(rows)
         self.right_edit.set_current_block(rows)
         first = self.blocks[index][0]
@@ -985,7 +988,8 @@ class FileCompareView(QWidget):
         from .extended_views import LineDetailDialog
 
         index = self.left_edit.current_row()
-        rows = self.result.rows if self.result else []
+        # 用编辑器当前行集（过滤模式下与文档块对应），不能用原始 result.rows
+        rows = self.left_edit.rows or []
         left = rows[index].left_text if 0 <= index < len(rows) and rows[index].left_text else ""
         right = rows[index].right_text if 0 <= index < len(rows) and rows[index].right_text else ""
         LineDetailDialog(self, left, right).exec()
