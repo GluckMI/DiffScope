@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from ..core.models import STATUS_META, DiffLine, DiffStatus, TextDiffResult
 from .theme import (
+    ACCENT,
     CURRENT_BLOCK,
     INLINE_COLORS,
     LINE_COLORS,
@@ -149,14 +150,14 @@ class DiffHighlighter(QSyntaxHighlighter):
                         self.setFormat(start, end - start, span_fmt)
             if row.cosmetic and not spans:
                 faint = QTextCharFormat()
-                faint.setBackground(QColor("#3a3c44"))
+                faint.setBackground(QColor("#3b3e47"))
                 self.setFormat(0, len(text), faint)
         if self.language and self.syntax_enabled:
-            self._apply_syntax(text, background)
+            self._apply_syntax(text, _row_background(row, self.side) if row else "")
         for start, length in self.matches.get(index, []):
             match_fmt = QTextCharFormat()
             match_fmt.setBackground(QColor("#f0c674"))
-            match_fmt.setForeground(QColor("#1b1d23"))
+            match_fmt.setForeground(QColor("#14161b"))
             self.setFormat(start, length, match_fmt)
 
     def _apply_syntax(self, text: str, background: str) -> None:
@@ -216,7 +217,7 @@ class LineNumberArea(QWidget):
                 if row is not None and row.manual:
                     painter.fillRect(QRectF(self.width() - 14, top + 2, 5, bottom - top - 4), QColor("#b18bea"))
                 if number in edit._bookmarks:
-                    painter.fillRect(QRectF(self.width() - 8, top + 2, 5, bottom - top - 4), QColor("#4d8cf0"))
+                    painter.fillRect(QRectF(self.width() - 8, top + 2, 5, bottom - top - 4), QColor(ACCENT))
                 painter.setPen(QColor(LINE_NUMBER_FG))
                 painter.setFont(MONO_FONT)
                 painter.drawText(
@@ -263,7 +264,7 @@ class DiffTextEdit(QPlainTextEdit):
         self.setTabStopDistance(32)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.setFrameShape(QPlainTextEdit.Shape.NoFrame)
-        self.setStyleSheet("QPlainTextEdit { background: #202229; color: #dfe2e8; }")
+        self.setStyleSheet("QPlainTextEdit { background: #1d2026; color: #e3e6ec; }")
         self.number_area = LineNumberArea(self)
         self.highlighter = DiffHighlighter(self.document())
         self.updateRequest.connect(self._on_update_request)

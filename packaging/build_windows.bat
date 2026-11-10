@@ -9,6 +9,7 @@ pyinstaller --noconfirm --clean ^
   --name DiffScope ^
   --windowed ^
   --icon packaging/icon.ico ^
+  --add-data "assets\icon_256.png;." ^
   --exclude-module PyQt5 ^
   --exclude-module tkinter ^
   --exclude-module QtWebEngineCore ^

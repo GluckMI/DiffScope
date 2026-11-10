@@ -21,3 +21,4 @@ Data/
 build/
 dist/
 *.spec
+generated-images/

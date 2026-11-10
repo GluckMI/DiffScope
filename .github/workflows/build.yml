@@ -23,7 +23,8 @@ jobs:
           python -m PyInstaller --noconfirm --clean \
             --name DiffScope \
             --windowed \
-            --icon packaging/icon_256.png \
+            --icon packaging/icon.icns \
+            --add-data "assets/icon_256.png:." \
             --exclude-module PyQt5 --exclude-module tkinter \
             --exclude-module QtWebEngineCore --exclude-module QtWebEngineWidgets \
             --exclude-module QtQml --exclude-module QtQuick --exclude-module QtQuick3D \
@@ -61,6 +62,7 @@ jobs:
         run: |
           python -m PyInstaller --noconfirm --clean `
             --name DiffScope --windowed --icon packaging/icon.ico `
+            --add-data "assets/icon_256.png;." `
             --exclude-module PyQt5 --exclude-module tkinter `
             --exclude-module QtWebEngineCore --exclude-module QtWebEngineWidgets `
             --exclude-module QtQml --exclude-module QtQuick --exclude-module QtQuick3D `

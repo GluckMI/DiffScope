@@ -121,7 +121,7 @@ class ConfirmActionsDialog(QDialog):
         labels = {"mkdir": "创建目录", "copy": "复制覆盖", "remove": "删除"}
         for row, action in enumerate(actions):
             kind = labels.get(action.kind, action.kind)
-            color = "#f0a0a0" if action.kind == "remove" else ("#e8b35a" if action.kind == "copy" else MUTED)
+            color = "#f0a0a0" if action.kind == "remove" else ("#f0ba5e" if action.kind == "copy" else MUTED)
             item = QTableWidgetItem(kind)
             item.setForeground(Qt.GlobalColor.white)
             item.setData(Qt.ItemDataRole.ForegroundRole, _color(color))
@@ -139,7 +139,7 @@ class ConfirmActionsDialog(QDialog):
         if danger:
             warn = QLabel("注意：删除操作优先移入系统回收站，回收站不可用时转存至备份目录；复制操作会覆盖目标文件。")
             warn.setWordWrap(True)
-            warn.setStyleSheet("color: #e8b35a; padding: 6px 8px; background: #3a2c17; border-radius: 4px;")
+            warn.setStyleSheet("color: #f0ba5e; padding: 6px 8px; background: #3f2f14; border-radius: 4px;")
             layout.addWidget(warn)
 
         buttons = QDialogButtonBox(self)

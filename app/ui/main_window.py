@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QTimer, QByteArray, QObject, Qt, QThread, Signal, Slot
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -108,7 +108,7 @@ class WelcomePanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title = QLabel(APP_NAME)
-        title.setStyleSheet("font-size: 34px; font-weight: 700; color: #6fa4f8;")
+        title.setStyleSheet("font-size: 34px; font-weight: 700; color: #58b1f7;")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sub = QLabel("文件与文件夹对比 · 差异查看 · 合并同步")
         sub.setStyleSheet(f"font-size: 14px; color: {MUTED};")
@@ -1145,9 +1145,27 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
+def _app_icon() -> QIcon | None:
+    """应用图标：开发态取仓库 assets/，打包态取 PyInstaller 解包目录。"""
+    if getattr(sys, "frozen", False):
+        base = Path(getattr(sys, "_MEIPASS", None) or Path(sys.executable).parent)
+    else:
+        base = Path(__file__).resolve().parent.parent.parent / "assets"
+    for name in ("icon_256.png", "icon_128.png", "icon_64.png"):
+        path = base / name
+        if path.is_file():
+            icon = QIcon(str(path))
+            if not icon.isNull():
+                return icon
+    return None
+
+
 def launch(argv: list[str] | None = None) -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
+    icon = _app_icon()
+    if icon is not None:
+        app.setWindowIcon(icon)
     app.setStyleSheet(STYLESHEET)
     window = MainWindow(argv)
     window.show()

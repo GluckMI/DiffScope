@@ -6,43 +6,43 @@ from PySide6.QtGui import QColor
 
 from ..core.models import DiffStatus
 
-BG = "#1b1d23"
-PANEL = "#22242b"
-PANEL_ALT = "#282b33"
-BORDER = "#363a45"
-TEXT = "#dfe2e8"
-MUTED = "#9096a3"
-ACCENT = "#4d8cf0"
-ACCENT_HOVER = "#619bff"
-DANGER = "#e65757"
+BG = "#14161b"
+PANEL = "#1b1e24"
+PANEL_ALT = "#22252d"
+BORDER = "#333844"
+TEXT = "#e3e6ec"
+MUTED = "#8f96a4"
+ACCENT = "#3d9df2"
+ACCENT_HOVER = "#5cb1f7"
+DANGER = "#ef6666"
 
 STATUS_COLORS: dict[DiffStatus, tuple[str, str, str]] = {
     # (文字色, 行背景色, 徽章背景色)
-    DiffStatus.SAME: ("#8b919e", "", "#2c2f37"),
-    DiffStatus.MODIFIED: ("#e8b35a", "#3a2c17", "#5a421d"),
-    DiffStatus.LEFT_ONLY: ("#74bdf5", "#183348", "#1d4a6b"),
-    DiffStatus.RIGHT_ONLY: ("#c4a2f2", "#2c2042", "#493270"),
-    DiffStatus.TYPE_CONFLICT: ("#f29784", "#421f1c", "#6b302a"),
-    DiffStatus.FOLDER_DIFF: ("#dcae62", "#332917", "#4d3c1d"),
-    DiffStatus.ERROR: ("#f08080", "#3f1d21", "#6a2a30"),
+    DiffStatus.SAME: ("#8f95a2", "", "#2e313a"),
+    DiffStatus.MODIFIED: ("#f0ba5e", "#3f2f14", "#63471b"),
+    DiffStatus.LEFT_ONLY: ("#63c2f8", "#153450", "#1a4e75"),
+    DiffStatus.RIGHT_ONLY: ("#c9a6f7", "#2e2049", "#513680"),
+    DiffStatus.TYPE_CONFLICT: ("#f59884", "#45201c", "#73322b"),
+    DiffStatus.FOLDER_DIFF: ("#e0b063", "#362a15", "#54401e"),
+    DiffStatus.ERROR: ("#f58282", "#421d22", "#722c33"),
 }
 
 LINE_COLORS = {
     "equal": ("", ""),
-    "replace": ("#3a2c17", "#3a2c17"),
-    "delete": ("#183348", "#23262d"),
-    "insert": ("#23262d", "#2c2042"),
-    "cosmetic": ("#2a2b31", "#2a2b31"),
+    "replace": ("#3f2f14", "#3f2f14"),
+    "delete": ("#153450", "#24272f"),
+    "insert": ("#24272f", "#2e2049"),
+    "cosmetic": ("#2b2d34", "#2b2d34"),
 }
 INLINE_COLORS = {
-    "replace": "#8a6320",
-    "delete": "#2a6a94",
-    "insert": "#63438f",
+    "replace": "#96691c",
+    "delete": "#2f74a8",
+    "insert": "#6f4ba5",
 }
-CURRENT_BLOCK = "#6d5a25"
-PLACEHOLDER = "#8b919e"
-LINE_NUMBER_BG = "#202229"
-LINE_NUMBER_FG = "#747b89"
+CURRENT_BLOCK = "#7d6626"
+PLACEHOLDER = "#8f95a2"
+LINE_NUMBER_BG = "#1d2026"
+LINE_NUMBER_FG = "#767d8c"
 
 STYLESHEET = f"""
 * {{ font-family: "Microsoft YaHei UI", "Segoe UI", "PingFang SC", sans-serif; font-size: 12px; }}
@@ -77,23 +77,23 @@ QPushButton {{
     background: {PANEL_ALT}; border: 1px solid {BORDER}; border-radius: 4px;
     color: {TEXT}; padding: 5px 12px; min-height: 20px;
 }}
-QPushButton:hover {{ background: #31353f; border-color: #4a4f5c; }}
-QPushButton:pressed {{ background: #3a3f4b; }}
-QPushButton:disabled {{ color: #686d79; background: {PANEL}; }}
+QPushButton:hover {{ background: #2e323c; border-color: #4a4f5c; }}
+QPushButton:pressed {{ background: #383d49; }}
+QPushButton:disabled {{ color: #6a7080; background: {PANEL}; }}
 QPushButton[accent="true"] {{ background: {ACCENT}; border-color: {ACCENT}; color: #ffffff; font-weight: 600; }}
 QPushButton[accent="true"]:hover {{ background: {ACCENT_HOVER}; }}
-QPushButton[accent="true"]:disabled {{ background: #35415a; border-color: #35415a; color: #8b94a8; }}
+QPushButton[accent="true"]:disabled {{ background: #2c4a72; border-color: #2c4a72; color: #8b94a8; }}
 QPushButton[danger="true"] {{ color: #f0a0a0; }}
-QPushButton:checked {{ background: #35415a; border-color: {ACCENT}; }}
+QPushButton:checked {{ background: #2c4a72; border-color: {ACCENT}; }}
 
 QTreeView, QTableView {{
     background: {PANEL_ALT}; border: 1px solid {BORDER}; border-radius: 4px;
-    gridline-color: #2f323b; alternate-background-color: #252830;
-    selection-background-color: #35507a; selection-color: #ffffff; outline: none;
+    gridline-color: #2e313a; alternate-background-color: #262932;
+    selection-background-color: #2c5386; selection-color: #ffffff; outline: none;
 }}
 QTreeView::item {{ padding: 3px 2px; border: none; }}
-QTreeView::item:hover {{ background: #303747; }}
-QTreeView::item:selected {{ background: #35507a; }}
+QTreeView::item:hover {{ background: #303848; }}
+QTreeView::item:selected {{ background: #2c5386; }}
 QHeaderView::section {{
     background: {PANEL}; color: {MUTED}; border: none;
     border-right: 1px solid {BORDER}; border-bottom: 1px solid {BORDER};
@@ -119,14 +119,14 @@ QProgressBar {{
 QProgressBar::chunk {{ background: {ACCENT}; border-radius: 2px; }}
 QScrollBar:vertical {{ background: {PANEL}; width: 11px; margin: 0; }}
 QScrollBar:horizontal {{ background: {PANEL}; height: 11px; margin: 0; }}
-QScrollBar::handle {{ background: #464b57; border-radius: 5px; min-height: 24px; min-width: 24px; }}
-QScrollBar::handle:hover {{ background: #5a6070; }}
+QScrollBar::handle {{ background: #444a57; border-radius: 5px; min-height: 24px; min-width: 24px; }}
+QScrollBar::handle:hover {{ background: #5b6272; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 
 QCheckBox, QRadioButton {{ background: transparent; spacing: 6px; }}
 QCheckBox::indicator, QRadioButton::indicator {{
-    width: 14px; height: 14px; border: 1px solid #555b68; border-radius: 3px; background: {PANEL_ALT};
+    width: 14px; height: 14px; border: 1px solid #565d6b; border-radius: 3px; background: {PANEL_ALT};
 }}
 QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
 QGroupBox {{
@@ -142,11 +142,11 @@ QFrame[role="divider"] {{ background: {BORDER}; }}
 
 LIGHT_MAP = {
     BG: "#f4f6f9", PANEL: "#ffffff", PANEL_ALT: "#fbfcfe", BORDER: "#d7dce5",
-    TEXT: "#20242c", MUTED: "#5c6573", ACCENT: "#3568c8", ACCENT_HOVER: "#4a7ce0",
-    "#1b1d23": "#f4f6f9", "#202229": "#ffffff", "#22242b": "#ffffff",
-    "#282b33": "#fbfcfe", "#303747": "#e9eef7", "#35507a": "#b8d0f5",
-    "#2f323b": "#e3e7ee", "#464b57": "#b6bdc8", "#5a6070": "#a2aab6",
-    "#31353f": "#eef1f6", "#3a3f4b": "#e5e9f0",
+    TEXT: "#20242c", MUTED: "#5c6573", ACCENT: "#1e7cd8", ACCENT_HOVER: "#3590e8",
+    "#14161b": "#f4f6f9", "#1d2026": "#ffffff", "#1b1e24": "#ffffff",
+    "#22252d": "#fbfcfe", "#303848": "#e9eef7", "#2c5386": "#b8d0f5",
+    "#2e313a": "#e3e7ee", "#444a57": "#b6bdc8", "#5b6272": "#a2aab6",
+    "#2e323c": "#eef1f6", "#383d49": "#e5e9f0",
 }
 
 

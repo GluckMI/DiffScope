@@ -736,5 +736,24 @@ class TestLineInfoPanel(unittest.TestCase):
         self.assertEqual(view.line_info_right.text(), "右：—")
 
 
+class TestSyntaxHighlight(unittest.TestCase):
+    """语法着色回归：带语言设置时 highlightBlock 不得抛错（曾因 background 未定义崩溃）。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_python_highlight_no_error(self) -> None:
+        from app.ui.widgets import DiffTextEdit
+
+        editor = DiffTextEdit("left")
+        editor.set_language("main.py")
+        editor.setPlainText("def main():\n    # comment\n    return 'ok'\n")
+        self.app.processEvents()
+        self.assertEqual(editor.highlighter.language, "python")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

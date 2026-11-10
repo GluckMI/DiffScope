@@ -351,7 +351,7 @@ class ImageViewer(ViewerWidget):
             label = QLabel("(无图片)")
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             label.setMinimumSize(200, 160)
-            label.setStyleSheet("background: #202229; border: 1px solid #363a45;")
+            label.setStyleSheet("background: #1d2026; border: 1px solid #333844;")
             box.addWidget(label, 1)
             row.addWidget(container, 1)
             self.views.append(label)

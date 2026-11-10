@@ -201,7 +201,7 @@ class FileCompareView(QWidget):
         self.error_banner.setWordWrap(True)
         self.error_banner.setVisible(False)
         self.error_banner.setStyleSheet(
-            "background: #3f1d21; color: #f08080; border: 1px solid #6a2a30;"
+            "background: #421d22; color: #f58282; border: 1px solid #722c33;"
             "border-radius: 4px; padding: 8px;"
         )
         root.addWidget(self.error_banner)
@@ -266,7 +266,7 @@ class FileCompareView(QWidget):
         self.line_info_left = QLabel("左：—")
         self.line_info_right = QLabel("右：—")
         for label in (self.line_info_left, self.line_info_right):
-            label.setStyleSheet("color: #dfe2e8; border: none;")
+            label.setStyleSheet("color: #e3e6ec; border: none;")
             info_layout.addWidget(label)
         root.addWidget(info)
         self.line_info_frame = info
