@@ -37,6 +37,10 @@ jobs:
         run: |
           ls -la dist/DiffScope.app/Contents/MacOS/
           ./dist/DiffScope.app/Contents/MacOS/DiffScope --version || true
+      - name: Create dmg installer
+        run: |
+          cd dist
+          hdiutil create -volname DiffScope -srcfolder DiffScope.app -ov -format UDZO DiffScope-macos.dmg
       - name: Zip app bundle
         run: |
           cd dist
@@ -44,7 +48,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: DiffScope-macos
-          path: dist/DiffScope-macos.zip
+          path: |
+            dist/DiffScope-macos.zip
+            dist/DiffScope-macos.dmg
 
   build-windows:
     runs-on: windows-latest
@@ -97,4 +103,5 @@ jobs:
         with:
           files: |
             artifacts/DiffScope-macos/DiffScope-macos.zip
+            artifacts/DiffScope-macos/DiffScope-macos.dmg
             artifacts/DiffScope-windows-x64/DiffScope-windows-x64.zip

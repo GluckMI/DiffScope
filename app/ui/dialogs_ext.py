@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
@@ -30,8 +32,11 @@ from PySide6.QtWidgets import (
 
 from .. import __version__
 from ..core.alignment import AlignmentConfig, AlignmentRule
+from ..core.merge import MergeDirection
+from ..core import git_diff, sqlite_diff
 from ..core.rules import CompareRules, IgnoreRule, COMMENT_PRESETS
 from ..core.services import Settings, check_update, install_shell_integration, vcs_config_commands
+from ..core.session import delete_template, list_templates, load_template, save_template
 from ..core.sync_modes import SyncMode
 from ..core.i18n import tr
 from .theme import MUTED
@@ -101,6 +106,8 @@ class SettingsDialog(QDialog):
         form = QFormLayout(page)
         self.backup = QCheckBox("保存前自动备份")
         self.backup.setChecked(bool(self.settings.get("auto_backup")))
+        self.auto_recompare = QCheckBox("编辑后自动重新比较（停止输入 0.8 秒后刷新差异）")
+        self.auto_recompare.setChecked(bool(self.settings.get("auto_recompare", True)))
         self.backup_keep = QSpinBox()
         self.backup_keep.setRange(1, 100)
         self.backup_keep.setValue(int(self.settings.get("backup_keep")))
@@ -126,7 +133,7 @@ class SettingsDialog(QDialog):
                               ("更新源", self.update_url), ("单文件文本上限", self.max_text),
                               ("目录条目上限", self.max_nodes)):
             form.addRow(label, widget)
-        for widget in (self.backup, self.content, self.expand, self.updates):
+        for widget in (self.backup, self.auto_recompare, self.content, self.expand, self.updates):
             form.addRow(widget)
         return page
 
@@ -176,6 +183,7 @@ class SettingsDialog(QDialog):
             "show_minimap": self.minimap.isChecked(),
             "show_line_numbers": self.lines.isChecked(),
             "auto_backup": self.backup.isChecked(),
+            "auto_recompare": self.auto_recompare.isChecked(),
             "backup_keep": self.backup_keep.value(),
             "default_compare_content": self.content.isChecked(),
             "expand_to_differences": self.expand.isChecked(),
@@ -193,6 +201,340 @@ class SettingsDialog(QDialog):
             data["shell_integration"] = self.shell.isChecked()
         self.settings.save()
         return self.settings
+
+
+class GitDiffDialog(QDialog):
+    """浏览 Git 仓库改动清单，选择文件比较 HEAD 版本与工作区。"""
+
+    compare_requested = Signal(str, str)
+
+    def __init__(self, parent, repo: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle(tr("Git 仓库改动比较"))
+        self.resize(760, 520)
+        layout = QVBoxLayout(self)
+        row = QHBoxLayout()
+        self.repo_edit = QLineEdit(repo)
+        self.repo_edit.setPlaceholderText(tr("Git 仓库根目录路径"))
+        browse = QPushButton(tr("浏览…"))
+        browse.clicked.connect(self._browse)
+        refresh = QPushButton(tr("刷新改动"))
+        refresh.clicked.connect(self._refresh)
+        row.addWidget(QLabel(tr("仓库：")))
+        row.addWidget(self.repo_edit, 1)
+        row.addWidget(browse)
+        row.addWidget(refresh)
+        layout.addLayout(row)
+
+        self.list = QListWidget()
+        self.list.itemDoubleClicked.connect(lambda *_: self._compare())
+        layout.addWidget(self.list, 1)
+        self.note = QLabel("")
+        self.note.setStyleSheet(f"color: {MUTED};")
+        self.note.setWordWrap(True)
+        layout.addWidget(self.note)
+        buttons = QHBoxLayout()
+        compare_btn = QPushButton(tr("比较选中文件（HEAD ⇄ 工作区）"))
+        compare_btn.setProperty("accent", True)
+        compare_btn.clicked.connect(self._compare)
+        buttons.addWidget(compare_btn)
+        buttons.addStretch(1)
+        layout.addLayout(buttons)
+        layout.addWidget(_buttons(self))
+
+    def _browse(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, tr("选择 Git 仓库"), self.repo_edit.text() or str(Path.home()))
+        if path:
+            self.repo_edit.setText(path)
+            self._refresh()
+
+    def _refresh(self) -> None:
+        from .dialogs import show_error
+
+        self.list.clear()
+        repo = Path(self.repo_edit.text().strip())
+        if not repo.exists():
+            self.note.setText(tr("路径不存在。"))
+            return
+        try:
+            entries = git_diff.changed_files(repo)
+        except Exception as exc:
+            show_error(self, exc, "读取 Git 改动")
+            return
+        if not entries:
+            self.note.setText(tr("工作区干净：没有未提交的改动。"))
+            return
+        for code, rel, desc in entries:
+            item = QListWidgetItem(f"{desc:<8} {rel}")
+            item.setData(Qt.ItemDataRole.UserRole, rel)
+            self.list.addItem(item)
+        self.note.setText(tr(f"共 {len(entries)} 项改动。双击或选中后点“比较”。"))
+
+    def _compare(self) -> None:
+        import tempfile
+
+        from .dialogs import show_error, show_info
+
+        item = self.list.currentItem()
+        if item is None:
+            return
+        repo = Path(self.repo_edit.text().strip())
+        rel = item.data(Qt.ItemDataRole.UserRole)
+        try:
+            head_path = git_diff.export_head_file(repo, rel, Path(tempfile.gettempdir()) / "diffscope-git")
+        except Exception as exc:
+            show_error(self, exc, "读取 HEAD 版本")
+            return
+        working = repo / rel
+        if head_path is None:
+            show_info(self, "无 HEAD 版本", f"{rel} 是新增文件，HEAD 中不存在，无法比较。")
+            return
+        self.compare_requested.emit(str(head_path), str(working))
+        self.accept()
+
+
+class SqliteDiffDialog(QDialog):
+    """SQLite 表数据比较：两库同名表按主键对齐，列出增/删/改。"""
+
+    def __init__(self, parent, left: str = "", right: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle(tr("SQLite 数据比较"))
+        self.resize(920, 560)
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self.left_edit = QLineEdit(left)
+        self.right_edit = QLineEdit(right)
+        for name, edit in (("左侧数据库", self.left_edit), ("右侧数据库", self.right_edit)):
+            edit.setPlaceholderText(tr("数据库文件路径（.db / .sqlite）"))
+            browse = QPushButton(tr("浏览…"))
+            browse.clicked.connect(lambda _=False, e=edit: self._browse(e))
+            row = QHBoxLayout()
+            row.addWidget(edit, 1)
+            row.addWidget(browse)
+            form.addRow(name, row)
+        layout.addLayout(form)
+        controls = QHBoxLayout()
+        self.table_box = QComboBox()
+        self.table_box.setMinimumWidth(220)
+        load_btn = QPushButton(tr("加载表清单"))
+        load_btn.clicked.connect(self._load_tables)
+        compare_btn = QPushButton(tr("比较选中表"))
+        compare_btn.setProperty("accent", True)
+        compare_btn.clicked.connect(self._compare)
+        controls.addWidget(QLabel(tr("数据表：")))
+        controls.addWidget(self.table_box, 1)
+        controls.addWidget(load_btn)
+        controls.addWidget(compare_btn)
+        layout.addLayout(controls)
+        self.summary = QLabel(tr("加载数据库后选择表进行比较。"))
+        self.summary.setStyleSheet(f"color: {MUTED};")
+        self.summary.setWordWrap(True)
+        layout.addWidget(self.summary)
+        self.table = QTableWidget()
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        layout.addWidget(self.table, 1)
+
+    def _browse(self, edit: QLineEdit) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, tr("选择数据库"), str(Path.home()),
+                                              "SQLite 数据库 (*.db *.sqlite *.sqlite3);;所有文件 (*.*)")
+        if path:
+            edit.setText(path)
+
+    def _load_tables(self) -> None:
+        from .dialogs import show_error
+
+        self.table_box.clear()
+        try:
+            left_tables = sqlite_diff.list_tables(Path(self.left_edit.text().strip()))
+            right_tables = set(sqlite_diff.list_tables(Path(self.right_edit.text().strip())))
+        except Exception as exc:
+            show_error(self, exc, "加载数据库")
+            return
+        common = [t for t in left_tables if t in right_tables]
+        if not common:
+            self.summary.setText(tr("两侧没有同名的数据表。"))
+            return
+        self.table_box.addItems(common)
+        self.summary.setText(tr(f"共 {len(common)} 张同名表。"))
+
+    def _compare(self) -> None:
+        from .dialogs import show_error
+
+        if not self.table_box.currentText():
+            return
+        try:
+            result = sqlite_diff.compare_tables(
+                Path(self.left_edit.text().strip()), Path(self.right_edit.text().strip()),
+                self.table_box.currentText(),
+            )
+        except Exception as exc:
+            show_error(self, exc, "比较数据表")
+            return
+        names = {"only_left": "仅左侧", "only_right": "仅右侧", "modified": "已修改"}
+        colors = {"only_left": "#63c2f8", "only_right": "#c9a6f7", "modified": "#f0ba5e"}
+
+        def brief(record) -> str:
+            if record is None:
+                return "—"
+            parts = [f"{col}={record[col]}" for col in result.columns
+                     if col != result.key_column][:4]
+            return ", ".join(parts)[:120]
+
+        self.table.clear()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels([tr("类型"), tr(result.key_column), tr("变更列"), tr("左侧值"), tr("右侧值")])
+        from PySide6.QtGui import QColor
+
+        changes = result.modified + result.only_left + result.only_right
+        self.table.setRowCount(len(changes))
+        for row, change in enumerate(changes):
+            kind_item = QTableWidgetItem(names[change.kind])
+            kind_item.setForeground(QColor(colors[change.kind]))
+            self.table.setItem(row, 0, kind_item)
+            self.table.setItem(row, 1, QTableWidgetItem(change.key))
+            self.table.setItem(row, 2, QTableWidgetItem(", ".join(change.changed_columns)))
+            self.table.setItem(row, 3, QTableWidgetItem(brief(change.left)))
+            self.table.setItem(row, 4, QTableWidgetItem(brief(change.right)))
+        self.table.resizeColumnsToContents()
+        trunc = tr("（超过单表上限，已截断）") if result.truncated else ""
+        self.summary.setText(
+            tr(f"表 {result.table}（主键 {result.key_column}）：修改 {len(result.modified)}、"
+               f"仅左侧 {len(result.only_left)}、仅右侧 {len(result.only_right)}、相同 {result.same_count}{trunc}")
+        )
+
+
+class TemplateDialog(QDialog):
+    """比较模板：把当前「比较规则 + 比较选项」存成命名模板，之后一键应用。"""
+
+    def __init__(self, parent, rules: CompareRules, options):
+        super().__init__(parent)
+        self.rules = rules
+        self.options = options
+        self.applied = None  # 应用成功时为 (rules, options)
+        self.setWindowTitle(tr("比较模板"))
+        self.setMinimumWidth(520)
+        layout = QVBoxLayout(self)
+        self.list = QListWidget()
+        self.list.itemDoubleClicked.connect(lambda *_: self._apply())
+        layout.addWidget(QLabel("模板保存比较规则与比较选项（不含路径），适合按项目语言复用。"))
+        layout.addWidget(self.list, 1)
+        buttons = QHBoxLayout()
+        save = QPushButton(tr("保存当前配置…"))
+        save.clicked.connect(self._save)
+        apply_btn = QPushButton(tr("应用选中模板"))
+        apply_btn.setProperty("accent", True)
+        apply_btn.clicked.connect(self._apply)
+        delete_btn = QPushButton(tr("删除"))
+        delete_btn.clicked.connect(self._delete)
+        buttons.addWidget(save)
+        buttons.addWidget(apply_btn)
+        buttons.addWidget(delete_btn)
+        layout.addLayout(buttons)
+        layout.addWidget(_buttons(self))
+        self._refresh()
+
+    def _refresh(self) -> None:
+        self.list.clear()
+        for path, data in list_templates():
+            item = QListWidgetItem(f"{data.get('name', path.stem)}（{data.get('saved_at', '')}）")
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            self.list.addItem(item)
+        if not self.list.count():
+            self.list.addItem(QListWidgetItem("（暂无模板，点击“保存当前配置”创建）"))
+
+    def _save(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+
+        name, ok = QInputDialog.getText(self, tr("保存模板"), tr("模板名称："))
+        if not ok or not name.strip():
+            return
+        try:
+            save_template(name, self.rules, self.options)
+        except Exception as exc:
+            from .dialogs import show_error
+
+            show_error(self, exc, "保存模板")
+            return
+        self._refresh()
+
+    def _apply(self) -> None:
+        item = self.list.currentItem()
+        if item is None or item.data(Qt.ItemDataRole.UserRole) is None:
+            return
+        from ..core.models import CompareOptions
+
+        try:
+            data = load_template(item.data(Qt.ItemDataRole.UserRole))
+            self.applied = (CompareRules.from_dict(data.get("rules")), CompareOptions.from_dict(data.get("options")))
+        except Exception as exc:
+            from .dialogs import show_error
+
+            show_error(self, exc, "应用模板")
+            return
+        self.accept()
+
+    def _delete(self) -> None:
+        item = self.list.currentItem()
+        if item is None or item.data(Qt.ItemDataRole.UserRole) is None:
+            return
+        try:
+            delete_template(item.data(Qt.ItemDataRole.UserRole))
+        except Exception as exc:
+            from .dialogs import show_error
+
+            show_error(self, exc, "删除模板")
+            return
+        self._refresh()
+
+
+class SelectiveMergeDialog(QDialog):
+    """勾选要应用的差异块，统一向一个方向合并。"""
+
+    def __init__(self, parent, blocks: list, rows: list):
+        super().__init__(parent)
+        self.setWindowTitle(tr("选择性合并"))
+        self.setMinimumWidth(640)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(tr("勾选需要合并的差异块；只读过滤视图下不可用。")))
+        self.list = QListWidget()
+        status_names = {"replace": "修改", "delete": "仅左侧", "insert": "仅右侧"}
+        for index, block_rows in enumerate(blocks, 1):
+            first = rows[block_rows[0]] if rows and block_rows else None
+            if first is None:
+                continue
+            status = status_names.get(first.op, first.op)
+            text = (first.left_text if first.op != "insert" else first.right_text) or ""
+            item = QListWidgetItem(f"{index}. 左 {first.left_no or '—'} / 右 {first.right_no or '—'}  {status}  {text.expandtabs(2)[:48]}")
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked)
+            item.setData(Qt.ItemDataRole.UserRole, index - 1)
+            self.list.addItem(item)
+        layout.addWidget(self.list, 1)
+        controls = QHBoxLayout()
+        layout.addWidget(QLabel(tr("合并方向：")))
+        self.direction_box = QComboBox()
+        self.direction_box.addItem(MergeDirection.LEFT_TO_RIGHT.label, MergeDirection.LEFT_TO_RIGHT)
+        self.direction_box.addItem(MergeDirection.RIGHT_TO_LEFT.label, MergeDirection.RIGHT_TO_LEFT)
+        controls.addWidget(self.direction_box)
+        toggle_all = QPushButton(tr("全选 / 全不选"))
+        toggle_all.clicked.connect(self._toggle_all)
+        controls.addWidget(toggle_all)
+        controls.addStretch(1)
+        layout.addLayout(controls)
+        layout.addWidget(_buttons(self))
+
+    def _toggle_all(self) -> None:
+        first = self.list.item(0)
+        target = Qt.CheckState.Unchecked if first and first.checkState() == Qt.CheckState.Checked else Qt.CheckState.Checked
+        for i in range(self.list.count()):
+            self.list.item(i).setCheckState(target)
+
+    def selected_blocks(self) -> list[int]:
+        return [item.data(Qt.ItemDataRole.UserRole) for i in range(self.list.count())
+                if (item := self.list.item(i)) and item.checkState() == Qt.CheckState.Checked]
+
+    def direction(self) -> MergeDirection:
+        return self.direction_box.currentData()
 
 
 class RulesDialog(QDialog):

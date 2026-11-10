@@ -43,6 +43,7 @@ DEFAULTS: dict = {
     "editor_font_size": 10,
     "word_wrap": False,
     "syntax_highlight": True,
+    "auto_recompare": True,
     "show_line_numbers": True,
     "show_minimap": True,
     "auto_backup": True,
@@ -64,6 +65,7 @@ DEFAULTS: dict = {
     },
     "colors": {},
     "recent_workspaces": [],
+    "recent_comparisons": [],
     "sync_schedule": [],
 }
 

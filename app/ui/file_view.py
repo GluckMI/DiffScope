@@ -8,14 +8,20 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QButtonGroup,
     QCheckBox,
+    QDialog,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
     QSplitter,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -26,7 +32,7 @@ from ..core.merge import MergeDirection, merge_all, merge_block, rebuild
 from ..core.models import CompareOptions, DiffStatus, TextDiffResult
 from ..core.text_diff import AlignmentPoint, TextAlignments, compute_text_diff, diff_blocks
 from .dialogs import confirm, show_error, show_info
-from .theme import BORDER, MUTED, PANEL, STATUS_COLORS
+from .theme import BORDER, CURRENT_BLOCK, MUTED, PANEL, STATUS_COLORS
 from .widgets import AlignmentGutter, DiffTextEdit, Minimap
 
 
@@ -146,6 +152,12 @@ class FileCompareView(QWidget):
         bar1.addWidget(self.show_diff_btn)
         bar1.addWidget(self.show_same_btn)
         bar1.addSpacing(10)
+        self.btn_nav = QPushButton("差异列表")
+        self.btn_nav.setCheckable(True)
+        self.btn_nav.setToolTip("显示差异块 / 书签列表，点击条目直接跳转")
+        self.btn_nav.toggled.connect(lambda on: self.nav_panel.setVisible(on))
+        bar1.addWidget(self.btn_nav)
+        bar1.addSpacing(10)
 
         self.btn_merge_l2r = QPushButton("合并当前块 →")
         self.btn_merge_r2l = QPushButton("← 合并当前块")
@@ -223,16 +235,33 @@ class FileCompareView(QWidget):
         splitter.addWidget(self.right_panel)
         self.minimap_widget = Minimap()
         splitter.addWidget(self.minimap_widget)
+        self.nav_panel = self._make_nav_panel()
+        splitter.addWidget(self.nav_panel)
+        self.nav_panel.setVisible(False)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(2, 1)
         splitter.setStretchFactor(1, 0)
         splitter.setStretchFactor(3, 0)
+        splitter.setStretchFactor(4, 0)
         # 连线栏与缩略图不可折叠、不被挤到 0 宽
         splitter.setCollapsible(1, False)
         splitter.setCollapsible(3, False)
-        splitter.setSizes([600, 30, 600, 26])
+        splitter.setCollapsible(4, False)
+        splitter.setSizes([600, 30, 600, 26, 0])
         root.addWidget(splitter, 1)
         self.set_minimap(self.minimap_widget)
+
+        # 编辑后自动重比较（防抖 800ms；设置可关；过滤/加载态跳过）
+        self._auto_timer = QTimer(self)
+        self._auto_timer.setSingleShot(True)
+        self._auto_timer.setInterval(800)
+        self._auto_timer.timeout.connect(self._auto_recompare)
+        self.left_edit.edited.connect(self._auto_timer.start)
+        self.right_edit.edited.connect(self._auto_timer.start)
+        # Ctrl+滚轮缩放：两侧统一调整并记忆到设置
+        self._editor_size = 10
+        self.left_edit.zoom_requested.connect(self._apply_zoom)
+        self.right_edit.zoom_requested.connect(self._apply_zoom)
 
         self.left_edit.verticalScrollBar().valueChanged.connect(
             lambda value: self._mirror_scroll(value, self.right_edit)
@@ -536,6 +565,7 @@ class FileCompareView(QWidget):
             self.right_edit.set_current_block(set())
             self.counter.setText("差异 0 / 0")
         self._refresh_save_buttons()
+        self._refresh_nav_list()
 
     # ---- 差异导航 -------------------------------------------------
     def difference_count(self) -> int:
@@ -655,6 +685,130 @@ class FileCompareView(QWidget):
             "same": f"显示过滤：仅相同段，共 {len(rows)} 行；只读，切回「全部」可编辑",
         }[self._display_filter]
         self.status_message.emit(hint)
+        self._refresh_nav_list()
+
+    # ---- 差异/书签侧栏 ---------------------------------------------
+    def _make_nav_panel(self) -> QFrame:
+        frame = QFrame()
+        frame.setStyleSheet(f"background: {PANEL}; border: 1px solid {BORDER}; border-radius: 4px;")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+        tabs = QTabWidget()
+        self.diff_list = QListWidget()
+        self.diff_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.diff_list.itemClicked.connect(self._nav_diff_clicked)
+        self.bookmark_list = QListWidget()
+        self.bookmark_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.bookmark_list.itemClicked.connect(self._nav_bookmark_clicked)
+        tabs.addTab(self.diff_list, "差异")
+        tabs.addTab(self.bookmark_list, "书签")
+        self.nav_tabs = tabs
+        layout.addWidget(tabs)
+        frame.setMinimumWidth(230)
+        frame.setMaximumWidth(320)
+        return frame
+
+    _OP_STATUS = (
+        ("replace", DiffStatus.MODIFIED, "修改"),
+        ("delete", DiffStatus.LEFT_ONLY, "仅左"),
+        ("insert", DiffStatus.RIGHT_ONLY, "仅右"),
+    )
+
+    def _refresh_nav_list(self) -> None:
+        self.diff_list.clear()
+        limit = 2000
+        from PySide6.QtGui import QColor
+
+        for index, rows in enumerate(self.blocks[:limit]):
+            first = self.result.rows[rows[0]] if self.result and rows else None
+            if first is None:
+                continue
+            status = next((s for op, s, name in self._OP_STATUS if op == first.op), None)
+            name = next((n for op, s, n in self._OP_STATUS if op == first.op), first.op)
+            color = QColor(STATUS_COLORS[status][0]) if status else QColor(MUTED)
+            label = f"{index + 1}. 左 {first.left_no or '—'} / 右 {first.right_no or '—'}  {name}"
+            item = QListWidgetItem(label)
+            item.setForeground(color)
+            item.setData(Qt.ItemDataRole.UserRole, index)
+            self.diff_list.addItem(item)
+        if len(self.blocks) > limit:
+            self.diff_list.addItem(QListWidgetItem(f"… 共 {len(self.blocks)} 处，仅显示前 {limit}"))
+        self._refresh_bookmark_list()
+
+    def _refresh_bookmark_list(self) -> None:
+        self.bookmark_list.clear()
+        from PySide6.QtGui import QColor
+
+        for row in sorted(self.bookmarks):
+            text = "—"
+            if self.result and 0 <= row < len(self.result.rows):
+                data = self.result.rows[row]
+                text = (data.left_text or data.right_text or "—").expandtabs(2)[:40]
+                left_no = data.left_no if data.left_no else row + 1
+            else:
+                left_no = row + 1
+            item = QListWidgetItem(f"行 {left_no}：{text}")
+            item.setForeground(QColor(CURRENT_BLOCK))
+            item.setData(Qt.ItemDataRole.UserRole, row)
+            self.bookmark_list.addItem(item)
+        if not self.bookmarks:
+            self.bookmark_list.addItem(QListWidgetItem("（Ctrl+B 在当前行切换书签）"))
+
+    def _nav_diff_clicked(self, item: QListWidgetItem) -> None:
+        index = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(index, int):
+            self.goto_block(index)
+
+    def _nav_bookmark_clicked(self, item: QListWidgetItem) -> None:
+        row = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(row, int):
+            return
+        if self._display_filter != "all":
+            target = self._display_positions.get(row)
+            if target is None:
+                self.status_message.emit("该书签行不在当前过滤视图中，请切换回「全部」后跳转")
+                return
+            self.goto_visible_row(target)
+        else:
+            self.goto_visible_row(row)
+
+    # ---- 自动重比较 / 缩放 ------------------------------------------
+    def _auto_recompare(self) -> None:
+        """用户停止输入 800ms 后自动重比较；设置可关；过滤态与空文档跳过。"""
+        if not self.result or self._display_filter != "all":
+            return
+        if self.settings is not None and not bool(self.settings.get("auto_recompare", True)):
+            return
+        from ..core.text_diff import compute_text_diff
+
+        result = compute_text_diff(
+            self.left_edit.text(), self.right_edit.text(), self.options,
+            self.result.left_encoding, self.result.right_encoding, self.rules,
+        )
+        if result.rows == self.result.rows:
+            return  # 编辑没有改变差异结构，避免无谓的整屏刷新
+        self._apply_result(result)
+        self.status_message.emit("已自动重新比较（可在设置中关闭）")
+
+    def _apply_zoom(self, delta: int) -> None:
+        size = max(8, min(32, self._editor_size + delta))
+        if size == self._editor_size:
+            return
+        self._editor_size = size
+        family = str(self.settings.get("editor_font_family")) if self.settings else "Consolas"
+        for editor in (self.left_edit, self.right_edit):
+            editor.apply_editor_style(family, size)
+        label_style = f"color: #e3e6ec; border: none; font-size: {size}pt;"
+        self.line_info_left.setStyleSheet(label_style)
+        self.line_info_right.setStyleSheet(label_style)
+        if self.settings is not None:
+            self.settings.set("editor_font_size", size)
+            try:
+                self.settings.save()
+            except Exception:
+                pass
+        self.status_message.emit(f"编辑器字号：{size}pt（Ctrl+滚轮调整）")
 
     # ---- 底部行内容栏 ----------------------------------------------
     def _update_line_info(self, editor: DiffTextEdit | None = None) -> None:
@@ -930,12 +1084,15 @@ class FileCompareView(QWidget):
         self.settings = settings
         family = str(settings.get("editor_font_family"))
         size = int(settings.get("editor_font_size"))
+        self._editor_size = size
         for editor in (self.left_edit, self.right_edit):
             editor.setFont(QFont(family, size))
+            editor.apply_editor_style(family, size)
             editor.set_word_wrap(bool(settings.get("word_wrap")))
             editor.set_line_numbers_visible(bool(settings.get("show_line_numbers")))
-        for label in (self.line_info_left, self.line_info_right):
-            label.setFont(QFont(family, size))
+        label_style = f"color: #e3e6ec; border: none; font-size: {size}pt;"
+        self.line_info_left.setStyleSheet(label_style)
+        self.line_info_right.setStyleSheet(label_style)
         if self.result:
             self._apply_result(self.result)
 
@@ -984,6 +1141,141 @@ class FileCompareView(QWidget):
         if action == 2:
             self.recompare()
 
+    def selective_merge(self) -> None:
+        """勾选若干差异块，统一方向合并（不再逐块确认）。"""
+        if not self.result or not self.blocks:
+            show_info(self, "无可合并内容", "当前没有差异块。")
+            return
+        if self._display_filter != "all":
+            self.status_message.emit("过滤模式下不可合并，请先切换回「全部」")
+            return
+        from .dialogs_ext import SelectiveMergeDialog
+
+        dialog = SelectiveMergeDialog(self, self.blocks, self.result.rows)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        direction = dialog.direction()
+        targets = dialog.selected_blocks()
+        if not targets:
+            self.status_message.emit("未选择任何差异块")
+            return
+        if not confirm(
+            self,
+            "确认选择性合并",
+            f"将合并选中的 {len(targets)} 处差异（{direction.label}）。",
+            "合并后仍需执行“保存”才会写入磁盘。",
+            danger=True,
+        ):
+            return
+        # merge_block 只改行内容不改行数，块行号保持稳定，可直接顺序应用
+        for index in targets:
+            row_index = self.blocks[index][0]
+            self.result = merge_block(self.result, row_index, direction)
+        self._dirty.add(direction.target)
+        self._apply_result(self.result, reset_counter=True)
+        self.status_message.emit(f"已合并 {len(targets)} 处差异（{direction.label}）；请保存目标侧文件")
+
+    def restore_backup(self) -> None:
+        """把当前对比文件回滚到某次自动备份。"""
+        import shutil
+
+        from ..core.services import BACKUP_DIR, backup_file
+        from PySide6.QtWidgets import QInputDialog
+
+        candidates = []
+        for side, path in (("左侧", self.left_path), ("右侧", self.right_path)):
+            if path is None:
+                continue
+            for backup in sorted(BACKUP_DIR.glob(f"*-{path.name}"), reverse=True):
+                stamp = backup.name.rsplit("-", 1)[0]
+                candidates.append((f"{side} {path.name} · {stamp}", path, backup))
+        if not candidates:
+            show_info(self, "没有可用备份", "未找到与当前对比文件匹配的自动备份（保存时才会生成）。")
+            return
+        choice, ok = QInputDialog.getItem(
+            self, "从备份恢复", "选择要恢复的备份（恢复前会先备份当前内容）：",
+            [c[0] for c in candidates], 0, False,
+        )
+        if not ok:
+            return
+        _label, path, backup = next(c for c in candidates if c[0] == choice)
+        if not confirm(
+            self, "确认恢复备份",
+            f"将用备份覆盖：\n{path}\n\n备份来源：{backup.name}",
+            "当前内容会先自动备份一份；恢复后界面将重新比较。",
+            danger=True,
+        ):
+            return
+        try:
+            backup_file(path)
+            shutil.copy2(backup, path)
+        except OSError as exc:
+            show_error(self, exc, "恢复备份")
+            return
+        self.status_message.emit(f"已恢复备份：{path}")
+        if self.left_path and self.right_path:
+            self.load_pair_async(str(self.left_path), str(self.right_path), self.options)
+
+    def export_diff_list(self) -> None:
+        """把差异块清单导出为 CSV（utf-8-sig，Excel 友好）或 XML。"""
+        import csv
+
+        if not self.result or not self.blocks:
+            show_info(self, "无可导出内容", "当前没有比较结果。")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出差异清单", "diff-list", "CSV (*.csv);;XML (*.xml)"
+        )
+        if not path:
+            return
+        names = {
+            DiffStatus.MODIFIED: "修改",
+            DiffStatus.LEFT_ONLY: "仅左侧",
+            DiffStatus.RIGHT_ONLY: "仅右侧",
+            DiffStatus.FOLDER_DIFF: "目录含差异",
+            DiffStatus.TYPE_CONFLICT: "类型冲突",
+            DiffStatus.ERROR: "错误",
+        }
+        items = []
+        for index, rows in enumerate(self.blocks, 1):
+            first, last = self.result.rows[rows[0]], self.result.rows[rows[-1]]
+            key = {"replace": DiffStatus.MODIFIED, "delete": DiffStatus.LEFT_ONLY,
+                   "insert": DiffStatus.RIGHT_ONLY}.get(first.op, DiffStatus.FOLDER_DIFF)
+            left_text = " | ".join(t for t in (self.result.rows[r].left_text or "" for r in rows) if t)[:200]
+            right_text = " | ".join(t for t in (self.result.rows[r].right_text or "" for r in rows) if t)[:200]
+            items.append({
+                "no": index, "status": names.get(key, key.value),
+                "left_start": first.left_no or "", "left_end": last.left_no or "",
+                "right_start": first.right_no or "", "right_end": last.right_no or "",
+                "left_text": left_text, "right_text": right_text,
+            })
+        target = Path(path)
+        try:
+            if target.suffix.lower() == ".xml":
+                from xml.sax.saxutils import escape
+
+                lines = ['<?xml version="1.0" encoding="utf-8"?>', "<diffs>"]
+                for it in items:
+                    lines.append(
+                        f'  <block no="{it["no"]}" status="{escape(it["status"])}"'
+                        f' left="{it["left_start"]}-{it["left_end"]}"'
+                        f' right="{it["right_start"]}-{it["right_end"]}">'
+                    )
+                    lines.append(f'    <left>{escape(it["left_text"])}</left>')
+                    lines.append(f'    <right>{escape(it["right_text"])}</right>')
+                    lines.append("  </block>")
+                lines.append("</diffs>")
+                target.write_text("\n".join(lines), encoding="utf-8")
+            else:
+                with open(target, "w", encoding="utf-8-sig", newline="") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=list(items[0].keys()))
+                    writer.writeheader()
+                    writer.writerows(items)
+        except OSError as exc:
+            show_error(self, exc, "导出差异清单")
+            return
+        self.status_message.emit(f"差异清单已导出：{target}")
+
     def line_detail(self) -> None:
         from .extended_views import LineDetailDialog
 
@@ -1009,6 +1301,7 @@ class FileCompareView(QWidget):
             self.bookmarks.add(row)
         for editor in (self.left_edit, self.right_edit):
             editor.set_bookmarks(self.bookmarks)
+        self._refresh_bookmark_list()
         self.status_message.emit(f"书签：{len(self.bookmarks)} 个（行 {row + 1}）")
 
     def goto_bookmark(self, forward: bool = True) -> None:

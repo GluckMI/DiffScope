@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -327,13 +329,14 @@ class TestFormatImportExport(Fixture):
 
 class TestUpdateCheck(Fixture):
     def test_no_url_and_local_json(self) -> None:
+        from app import __version__
         from app.core.services import check_update
 
         self.assertIn("未配置更新源", check_update())
         payload = self.root / "version.json"
         payload.write_text('{"version": "9.9.9"}', encoding="utf-8")
         self.assertIn("9.9.9", check_update(payload.as_uri()))
-        payload.write_text('{"version": "2.0.0"}', encoding="utf-8")
+        payload.write_text(f'{{"version": "{__version__}"}}', encoding="utf-8")
         self.assertIn("已是最新版本", check_update(payload.as_uri()))
 
 
@@ -837,6 +840,492 @@ class TestFilteredHighlight(unittest.TestCase):
         # only-left 行右侧缺内容 → 占位应记在右编辑器（按显示块号 10）
         self.assertIn(only_left, view.right_edit._placeholder)
         self.assertNotIn(only_left, view.left_edit._placeholder)
+
+
+class TestEditorEnhancements(unittest.TestCase):
+    """P1：Ctrl+滚轮缩放、自动重比较、差异/书签侧栏、新语法着色。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="ds-editor-")
+        self.root = Path(self._tmp.name)
+        self.f1 = self.root / "a.txt"
+        self.f2 = self.root / "b.txt"
+        self.f1.write_text("alpha\nCHANGED-L\nsame\nonly-left\ntail\n", encoding="utf-8")
+        self.f2.write_text("alpha\nCHANGED-R\nsame\ntail\n", encoding="utf-8")
+        self._patches = []
+        for target, value in (
+            ("app.ui.main_window.show_warning", lambda *a, **k: None),
+            ("app.ui.main_window.last_session_path", lambda: self.root / "no-last.json"),
+            ("app.ui.main_window.save_last_session", lambda *a, **k: None),
+        ):
+            patcher = mock.patch(target, value)
+            patcher.start()
+            self._patches.append(patcher)
+        from app.ui.main_window import MainWindow
+
+        self.window = MainWindow()
+        self.app.processEvents()
+
+    def tearDown(self) -> None:
+        for patcher in self._patches:
+            patcher.stop()
+        self.window.close()
+        self._tmp.cleanup()
+
+    def _load(self):
+        view = self.window.file_view
+        seq0 = view._load_seq
+        view.load_pair_async(str(self.f1), str(self.f2), None)
+        waited = 0
+        while view._load_seq == seq0 and waited < 8000:
+            self.app.processEvents(); time.sleep(0.01); waited += 10
+        while view._async_thread is not None and waited < 8000:
+            self.app.processEvents(); time.sleep(0.01); waited += 10
+        self.app.processEvents()
+
+    def test_language_detection_new_kinds(self) -> None:
+        from app.ui.widgets import language_from_name
+
+        for name, expected in (("x.json", "json"), ("x.yaml", "yaml"), ("x.yml", "yaml"),
+                               ("x.go", "go"), ("x.rs", "rust"), ("x.md", "markdown")):
+            self.assertEqual(language_from_name(name), expected)
+
+    def test_zoom_updates_fonts_and_settings(self) -> None:
+        self._load()
+        view = self.window.file_view
+        before = view._editor_size
+        view._apply_zoom(1)
+        self.assertEqual(view._editor_size, before + 1)
+        self.assertEqual(int(view.settings.get("editor_font_size")), before + 1)
+        # 字号必须写进编辑器自身样式表，否则被全局样式表覆盖不生效
+        self.assertIn(f"font-size: {before + 1}pt", view.left_edit.styleSheet())
+        view._apply_zoom(-1)
+        self.assertEqual(view._editor_size, before)
+
+    def test_nav_panel_lists_blocks_and_jumps(self) -> None:
+        self._load()
+        view = self.window.file_view
+        view.btn_nav.setChecked(True)
+        self.assertFalse(view.nav_panel.isHidden())
+        self.assertEqual(view.diff_list.count(), len(view.blocks))
+        first = view.diff_list.item(0)
+        self.assertEqual(first.data(Qt.ItemDataRole.UserRole), 0)
+        view._nav_diff_clicked(first)
+        self.assertEqual(view.current_block, 0)
+
+    def test_bookmark_tab_lists_bookmarks(self) -> None:
+        self._load()
+        view = self.window.file_view
+        view.btn_nav.setChecked(True)
+        view.goto_visible_row(0)
+        view.toggle_bookmark()
+        self.assertEqual(view.bookmark_list.count(), 1)
+
+    def test_auto_recompare_refreshes_blocks(self) -> None:
+        from PySide6.QtGui import QTextCursor
+
+        self._load()
+        view = self.window.file_view
+        self.assertTrue(view.settings.get("auto_recompare", True))
+        blocks_before = len(view.blocks)
+        cursor = view.right_edit.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertText("\nnew-right-line")
+        # 防抖 800ms 后触发
+        waited = 0
+        while waited < 3000:
+            self.app.processEvents(); time.sleep(0.05); waited += 50
+            if len(view.blocks) != blocks_before:
+                break
+        self.assertNotEqual(len(view.blocks), blocks_before)
+        self.assertEqual(view.left_edit.rows[-1].right_text, "new-right-line")
+
+
+from PySide6.QtCore import Qt  # noqa: E402  (供以上用例使用)
+
+
+class TestWorkflowP2(unittest.TestCase):
+    """P2：最近比较列表、差异清单导出、比较模板。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="ds-p2-")
+        self.root = Path(self._tmp.name)
+        self.f1 = self.root / "a.txt"
+        self.f2 = self.root / "b.txt"
+        self.f1.write_text("alpha\nCHANGED-L\nsame\nonly-left\ntail\n", encoding="utf-8")
+        self.f2.write_text("alpha\nCHANGED-R\nsame\ntail\n", encoding="utf-8")
+        self._patches = []
+        for target, value in (
+            ("app.ui.main_window.show_warning", lambda *a, **k: None),
+            ("app.ui.main_window.last_session_path", lambda: self.root / "no-last.json"),
+            ("app.ui.main_window.save_last_session", lambda *a, **k: None),
+            # 防止测试把最近比较写进真实用户设置
+            ("app.core.services.Settings.save", lambda self: None),
+        ):
+            patcher = mock.patch(target, value, create=True)
+            patcher.start()
+            self._patches.append(patcher)
+        from app.ui.main_window import MainWindow
+
+        self.window = MainWindow()
+        self.app.processEvents()
+
+    def tearDown(self) -> None:
+        for patcher in self._patches:
+            patcher.stop()
+        self.window.close()
+        self._tmp.cleanup()
+
+    def _load(self):
+        view = self.window.file_view
+        seq0 = view._load_seq
+        view.load_pair_async(str(self.f1), str(self.f2), None)
+        waited = 0
+        while view._load_seq == seq0 and waited < 8000:
+            self.app.processEvents(); time.sleep(0.01); waited += 10
+        while view._async_thread is not None and waited < 8000:
+            self.app.processEvents(); time.sleep(0.01); waited += 10
+        self.app.processEvents()
+
+    def test_recent_comparisons_recorded(self) -> None:
+        # 其他测试可能已写入真实设置文件，先清空再验证
+        self.window.settings.set("recent_comparisons", [])
+        self.window._record_recent(str(self.f1), str(self.f2))
+        self.window._record_recent(str(self.f1), str(self.f2))
+        self.window._record_recent(str(self.f2), str(self.f1))
+        items = self.window.settings.get("recent_comparisons")
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0]["left"], str(self.f2))
+        self.assertEqual(self.window.welcome.recent_list.count(), 2)
+
+    def test_welcome_recent_reopens(self) -> None:
+        from PySide6.QtWidgets import QListWidgetItem
+
+        self.window.welcome.set_recent([{"left": str(self.f1), "right": str(self.f2)}])
+        item = self.window.welcome.recent_list.item(0)
+        self.window.welcome._emit_recent(item)
+        self.app.processEvents()
+        self.assertEqual(self.window.left_edit.text(), str(self.f1))
+        self.assertEqual(self.window.right_edit.text(), str(self.f2))
+
+    def test_export_diff_list_xml(self) -> None:
+        self._load()
+        view = self.window.file_view
+        out = self.root / "diffs.xml"
+        with mock.patch("app.ui.file_view.QFileDialog.getSaveFileName",
+                        return_value=(str(out), "XML (*.xml)")):
+            view.export_diff_list()
+        text = out.read_text(encoding="utf-8")
+        self.assertIn("<diffs>", text)
+        self.assertIn("CHANGED-L", text)
+        self.assertIn("仅左侧", text)
+
+    def test_export_diff_list_csv(self) -> None:
+        self._load()
+        view = self.window.file_view
+        out = self.root / "diffs.csv"
+        with mock.patch("app.ui.file_view.QFileDialog.getSaveFileName",
+                        return_value=(str(out), "CSV (*.csv)")):
+            view.export_diff_list()
+        text = out.read_text(encoding="utf-8-sig")
+        self.assertIn("status", text)
+        self.assertIn("修改", text)
+        self.assertIn("CHANGED-R", text)
+
+    def test_template_save_load_roundtrip(self) -> None:
+        from app.core.models import CompareOptions
+        from app.core.rules import CompareRules
+        from app.core.session import list_templates, load_template, save_template
+
+        with mock.patch("app.core.session.config_dir", return_value=self.root):
+            rules = CompareRules.preset("python")
+            options = CompareOptions(ignore_case=True, excludes=("build",))
+            save_template("测试模板", rules, options)
+            entries = list_templates()
+            self.assertTrue(entries)
+            data = load_template(entries[0][0])
+            self.assertEqual(data["name"], "测试模板")
+            restored = (CompareRules.from_dict(data["rules"]), CompareOptions.from_dict(data["options"]))
+            self.assertTrue(restored[1].ignore_case)
+            self.assertIn("build", restored[1].excludes)
+
+    def test_template_dialog_apply(self) -> None:
+        from app.core.models import CompareOptions
+        from app.core.session import save_template
+        from app.ui.dialogs_ext import TemplateDialog
+
+        with mock.patch("app.core.session.config_dir", return_value=self.root):
+            save_template("对话框模板", self.window.rules, CompareOptions(ignore_whitespace=True))
+            dialog = TemplateDialog(self.window, self.window.rules, self.window.options)
+            dialog.list.setCurrentRow(0)
+            dialog._apply()
+            self.assertIsNotNone(dialog.applied)
+            self.assertTrue(dialog.applied[1].ignore_whitespace)
+
+
+class TestMergeWorkflowP3(unittest.TestCase):
+    """P3：选择性合并、预演报告导出、备份恢复。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="ds-p3-")
+        self.root = Path(self._tmp.name)
+        self.f1 = self.root / "a.txt"
+        self.f2 = self.root / "b.txt"
+        self.f1.write_text("alpha\nCHANGED-L\nsame\nonly-left\ntail\n", encoding="utf-8")
+        self.f2.write_text("alpha\nCHANGED-R\nsame\ntail\n", encoding="utf-8")
+        self._patches = []
+        for target, value in (
+            ("app.ui.main_window.show_warning", lambda *a, **k: None),
+            ("app.ui.main_window.last_session_path", lambda: self.root / "no-last.json"),
+            ("app.ui.main_window.save_last_session", lambda *a, **k: None),
+        ):
+            patcher = mock.patch(target, value, create=True)
+            patcher.start()
+            self._patches.append(patcher)
+        from app.ui.main_window import MainWindow
+
+        self.window = MainWindow()
+        self.app.processEvents()
+
+    def tearDown(self) -> None:
+        for patcher in self._patches:
+            patcher.stop()
+        self.window.close()
+        self._tmp.cleanup()
+
+    def _load(self):
+        view = self.window.file_view
+        seq0 = view._load_seq
+        view.load_pair_async(str(self.f1), str(self.f2), None)
+        waited = 0
+        while view._load_seq == seq0 and waited < 8000:
+            self.app.processEvents(); time.sleep(0.01); waited += 10
+        while view._async_thread is not None and waited < 8000:
+            self.app.processEvents(); time.sleep(0.01); waited += 10
+        self.app.processEvents()
+
+    def test_selective_merge_dialog_selection(self) -> None:
+        from PySide6.QtCore import Qt as Qt
+
+        from app.core.merge import MergeDirection
+        from app.ui.dialogs_ext import SelectiveMergeDialog
+
+        self._load()
+        view = self.window.file_view
+        dialog = SelectiveMergeDialog(view, view.blocks, view.result.rows)
+        self.assertEqual(dialog.selected_blocks(), list(range(len(view.blocks))))
+        # 只勾第一块
+        for i in range(dialog.list.count()):
+            dialog.list.item(i).setCheckState(QChecked := Qt.CheckState.Checked if i == 0 else Qt.CheckState.Unchecked)
+        self.assertEqual(dialog.selected_blocks(), [0])
+        self.assertEqual(dialog.direction(), MergeDirection.LEFT_TO_RIGHT)
+
+    def test_selective_merge_applies_only_selected(self) -> None:
+        self._load()
+        view = self.window.file_view
+        blocks_before = len(view.blocks)
+        # 模拟：对话框选择全部块 → 直接调用合并逻辑（跳过对话框）
+        from app.core.merge import merge_block
+
+        targets = [0]
+        for index in targets:
+            view.result = merge_block(view.result, view.blocks[index][0], __import__("app.core.merge", fromlist=["MergeDirection"]).MergeDirection.LEFT_TO_RIGHT)
+        view._apply_result(view.result, reset_counter=True)
+        # 第 0 块（replace CHANGED）已合并为一致，块数减少
+        self.assertLess(len(view.blocks), blocks_before)
+        rows = view.result.rows
+        changed = next(r for r in rows if r.left_text == "CHANGED-L")
+        self.assertEqual(changed.right_text, "CHANGED-L")
+        # 未选中的 only-left 仍存在
+        self.assertTrue(any(r.left_text == "only-left" for r in rows))
+
+    def test_restore_backup_recovers_content(self) -> None:
+        from app.core.services import backup_file
+
+        self._load()
+        view = self.window.file_view
+        # 造一个备份：把 f2 当前内容备份，然后改写 f2，再恢复（备份目录指向临时目录）
+        with mock.patch("app.core.services.BACKUP_DIR", self.root / "backups"):
+            backup = backup_file(self.f2)
+            self.assertIsNotNone(backup)
+            self.f2.write_text("alpha\nCHANGED-L\nsame\ntail\nextra\n", encoding="utf-8")
+            self._load()
+            with mock.patch("PySide6.QtWidgets.QInputDialog.getItem",
+                            return_value=([c[0] for c in self._candidates(view)][0], True)), \
+                 mock.patch("app.ui.file_view.confirm", return_value=True):
+                view.restore_backup()
+        waited = 0
+        while getattr(view, "_async_thread", None) is not None and waited < 8000:
+            self.app.processEvents(); time.sleep(0.01); waited += 10
+        self.app.processEvents()
+        self.assertIn("CHANGED-R", self.f2.read_text(encoding="utf-8"))
+
+    def _candidates(self, view):
+        from app.core.services import BACKUP_DIR
+
+        out = []
+        for side, path in (("左侧", view.left_path), ("右侧", view.right_path)):
+            if path is None:
+                continue
+            for backup in sorted(BACKUP_DIR.glob(f"*-{path.name}"), reverse=True):
+                stamp = backup.name.rsplit("-", 1)[0]
+                out.append((f"{side} {path.name} · {stamp}", path, backup))
+        return out
+
+    def test_sync_preview_export(self) -> None:
+        from app.core.models import SyncAction
+        from app.ui.dialogs import ConfirmActionsDialog
+
+        actions = [SyncAction("copy", "a.txt", None, None, note=""),
+                   SyncAction("remove", "old/", None, None, is_dir=True)]
+        dialog = ConfirmActionsDialog(self.window, "测试", "预演", actions)
+        out = self.root / "preview.csv"
+        with mock.patch("app.ui.dialogs.QFileDialog.getSaveFileName",
+                        return_value=(str(out), "CSV (*.csv)")):
+            dialog._export_preview()
+        self.assertIn("preview.csv", dialog._preview_note.text())
+        text = out.read_text(encoding="utf-8-sig")
+        self.assertIn("复制覆盖,a.txt", text)
+        self.assertIn("删除,old/", text)
+
+
+class TestCoreP4(unittest.TestCase):
+    """P4：SQLite 比较、Git 集成、图片感知相似度、文件夹缓存与并行。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+        cls.dir = tempfile.TemporaryDirectory(prefix="ds-p4-")
+        cls.root = Path(cls.dir.name)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.dir.cleanup()
+
+    def _make_db(self, path: Path, rows: list[tuple], schema: str | None = None) -> None:
+        con = sqlite3.connect(path)
+        try:
+            con.execute(schema or "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, qty INTEGER)")
+            if rows:
+                placeholders = ", ".join("?" * len(rows[0]))
+                con.executemany(f"INSERT INTO items VALUES ({placeholders})", rows)
+            con.commit()
+        finally:
+            con.close()
+
+    def test_sqlite_compare_tables(self) -> None:
+        from app.core.sqlite_diff import compare_tables, list_tables
+
+        self._make_db(self.root / "a.db", [(1, "x", 10), (2, "y", 20), (3, "z", 30)])
+        self._make_db(self.root / "b.db", [(1, "x", 10), (2, "y", 99), (4, "w", 40)])
+        self.assertEqual(list_tables(self.root / "a.db"), ["items"])
+        result = compare_tables(self.root / "a.db", self.root / "b.db", "items")
+        self.assertEqual(result.key_column, "id")
+        self.assertEqual([c.key for c in result.modified], ["2"])
+        self.assertEqual(result.modified[0].changed_columns, ["qty"])
+        self.assertEqual([c.key for c in result.only_left], ["3"])
+        self.assertEqual([c.key for c in result.only_right], ["4"])
+        self.assertEqual(result.same_count, 1)
+
+    def test_sqlite_structural_mismatch(self) -> None:
+        from app.core.sqlite_diff import SqliteError, compare_tables
+
+        self._make_db(self.root / "c.db", [(1, "x")], schema="CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)")
+        self._make_db(self.root / "d.db", [], schema="CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, extra TEXT)")
+        with self.assertRaises(SqliteError):
+            compare_tables(self.root / "c.db", self.root / "d.db", "items")
+
+    def test_git_changed_files_and_head_export(self) -> None:
+        from app.core.git_diff import changed_files, export_head_file, is_repo
+
+        repo = self.root / "repo"
+        repo.mkdir(exist_ok=True)
+        env_git = subprocess.run(["git", "-C", str(repo), "init"], capture_output=True)
+        if env_git.returncode != 0:
+            self.skipTest("git 不可用")
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], capture_output=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], capture_output=True)
+        (repo / "f.txt").write_text("head\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "."], capture_output=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], capture_output=True)
+        self.assertTrue(is_repo(repo))
+        (repo / "f.txt").write_text("work\n", encoding="utf-8")
+        (repo / "new.txt").write_text("new\n", encoding="utf-8")
+        entries = {rel: (code, desc) for code, rel, desc in changed_files(repo)}
+        self.assertIn("f.txt", entries)
+        self.assertIn("new.txt", entries)
+        head = export_head_file(repo, "f.txt", self.root / "headtmp")
+        self.assertEqual(head.read_bytes(), b"head\n")
+        self.assertIsNone(export_head_file(repo, "new.txt", self.root / "headtmp"))
+
+    def test_image_perceptual_similarity(self) -> None:
+        try:
+            import io as _io
+
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow 不可用")
+        from app.core.media import compare_images
+
+        def gradient(shift: int, invert: bool = False) -> bytes:
+            buf = _io.BytesIO()
+            img = Image.new("RGB", (64, 64))
+            img.putdata([
+                ((255 - ((x * 4 + shift) % 256)) if invert else (x * 4 + shift) % 256,) * 3
+                for _ in range(64) for x in range(64)
+            ])
+            img.save(buf, format="PNG")
+            return buf.getvalue()
+
+        base = gradient(0)
+        similar = compare_images(base, gradient(3))
+        different = compare_images(base, gradient(0, invert=True))
+        self.assertIsNotNone(similar.similarity)
+        self.assertGreater(similar.similarity, 0.9)
+        self.assertLess(different.similarity, 0.5)
+
+    def test_folder_compare_cache_and_parallel(self) -> None:
+        from app.core.compare import _SIGNATURE_CACHE, compare
+
+        left = self.root / "fleft"
+        right = self.root / "fright"
+        left.mkdir(exist_ok=True)
+        right.mkdir(exist_ok=True)
+        for i in range(12):
+            (left / f"f{i}.txt").write_text(f"same content {i}", encoding="utf-8")
+            (right / f"f{i}.txt").write_text(f"same content {i}", encoding="utf-8")
+        result1 = compare(str(left), str(right))
+        self.assertEqual(result1.stats.get("differences", 0), 0)
+        cached = len(_SIGNATURE_CACHE)
+        self.assertGreater(cached, 0)
+        # 再次比较：签名应全部命中缓存（缓存条目数不变），且结论一致
+        result2 = compare(str(left), str(right))
+        self.assertEqual(result2.stats.get("differences", 0), 0)
+        self.assertEqual(len(_SIGNATURE_CACHE), cached)
+        # 修改一侧后仍能检出差异
+        (right / "f0.txt").write_text("changed", encoding="utf-8")
+        result3 = compare(str(left), str(right))
+        self.assertEqual(result3.stats.get("differences", 0), 1)
 
 
 if __name__ == "__main__":

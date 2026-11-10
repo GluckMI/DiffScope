@@ -27,6 +27,7 @@ class ImageDiffResult:
     total_pixels: int = 0
     tolerance: int = 0
     diff_image: bytes = b""
+    similarity: float | None = None  # dHash 感知相似度（0~1），Pillow 不可用时为 None
 
     @property
     def identical(self) -> bool:
@@ -35,6 +36,29 @@ class ImageDiffResult:
     @property
     def ratio(self) -> float:
         return self.diff_pixels / self.total_pixels if self.total_pixels else 0.0
+
+
+def _dhash_bits(image, hash_size: int = 8) -> list[int]:
+    """dHash：9x8 灰度缩放后按行比较相邻像素，64 位指纹，容忍压缩/缩放噪声。"""
+    Image, _, _ = _pil()
+    gray = image.convert("L").resize((hash_size + 1, hash_size), Image.Resampling.LANCZOS)
+    pixels = list(gray.getdata())
+    bits: list[int] = []
+    for row in range(hash_size):
+        base = row * (hash_size + 1)
+        for col in range(hash_size):
+            bits.append(1 if pixels[base + col] > pixels[base + col + 1] else 0)
+    return bits
+
+
+def perceptual_similarity(left, right) -> float | None:
+    """感知相似度 0~1；解码失败返回 None。left/right 为 PIL Image。"""
+    try:
+        ha, hb = _dhash_bits(left), _dhash_bits(right)
+        same = sum(1 for x, y in zip(ha, hb) if x == y)
+        return same / len(ha) if ha else None
+    except Exception:
+        return None
 
 
 def _pil():
@@ -79,6 +103,7 @@ def compare_images(
     Image, ImageChops, ImageEnhance = _pil()
     a = load_image(left, transform_left, scale)
     b = load_image(right, transform_right, scale)
+    similarity = perceptual_similarity(a, b)
     width, height = max(a.width, b.width), max(a.height, b.height)
     if (a.width, a.height) != (width, height):
         canvas = Image.new("RGB", (width, height), (255, 255, 255))
@@ -118,6 +143,7 @@ def compare_images(
         left_size=a.size, right_size=b.size, width=width, height=height,
         diff_pixels=diff_pixels, total_pixels=width * height,
         tolerance=tolerance, diff_image=buffer.getvalue(),
+        similarity=similarity,
     )
 
 

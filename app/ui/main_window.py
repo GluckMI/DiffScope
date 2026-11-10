@@ -11,9 +11,12 @@ from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QDialog,
     QFileDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMenu,
     QProgressBar,
@@ -103,6 +106,8 @@ class CompareWorker(QObject):
 
 
 class WelcomePanel(QWidget):
+    open_recent = Signal(str, str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
@@ -137,6 +142,32 @@ class WelcomePanel(QWidget):
         tip.setStyleSheet(f"color: {MUTED};")
         tip.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(tip)
+        self.recent_caption = QLabel("最近比较（点击重开）")
+        self.recent_caption.setStyleSheet(f"color: {MUTED};")
+        self.recent_caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.recent_caption.setVisible(False)
+        layout.addSpacing(12)
+        layout.addWidget(self.recent_caption)
+        self.recent_list = QListWidget()
+        self.recent_list.setMaximumHeight(140)
+        self.recent_list.setVisible(False)
+        self.recent_list.itemClicked.connect(self._emit_recent)
+        layout.addWidget(self.recent_list)
+
+    def set_recent(self, items: list) -> None:
+        self.recent_list.clear()
+        for entry in items:
+            left, right = str(entry.get("left", "")), str(entry.get("right", ""))
+            item = QListWidgetItem(f"{left}   ⇄   {right}")
+            item.setData(Qt.ItemDataRole.UserRole, (left, right))
+            self.recent_list.addItem(item)
+        has = self.recent_list.count() > 0
+        self.recent_list.setVisible(has)
+        self.recent_caption.setVisible(has)
+
+    def _emit_recent(self, item: QListWidgetItem) -> None:
+        left, right = item.data(Qt.ItemDataRole.UserRole)
+        self.open_recent.emit(left, right)
 
 
 class MainWindow(QMainWindow):
@@ -258,6 +289,49 @@ class MainWindow(QMainWindow):
         self.file_view.back_requested.connect(self.back_to_folders)
         self.file_view.saved.connect(lambda: self.start_compare(switch_view=False))
         self.summary.filter_changed.connect(self.apply_status_filter)
+        self.welcome.open_recent.connect(self._reopen_recent)
+        self.welcome.set_recent(list(self.settings.get("recent_comparisons") or []))
+
+    def _record_recent(self, left: str, right: str) -> None:
+        items = [e for e in (self.settings.get("recent_comparisons") or [])
+                 if not (e.get("left") == left and e.get("right") == right)]
+        items.insert(0, {"left": left, "right": right})
+        self.settings.set("recent_comparisons", items[:10])
+        try:
+            self.settings.save()
+        except Exception:
+            pass
+        self.welcome.set_recent(items[:10])
+
+    def _reopen_recent(self, left: str, right: str) -> None:
+        self.left_edit.setText(left)
+        self.right_edit.setText(right)
+        self.start_compare()
+
+    def open_templates(self) -> None:
+        from .dialogs_ext import TemplateDialog
+
+        dialog = TemplateDialog(self, self.rules, self.options)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.applied is not None:
+            self.rules, self.options = dialog.applied
+            self.set_status("已应用比较模板（规则与选项已更新）")
+
+    def open_git_diff(self) -> None:
+        from .dialogs_ext import GitDiffDialog
+
+        dialog = GitDiffDialog(self)
+        dialog.compare_requested.connect(self._compare_git_pair)
+        dialog.exec()
+
+    def _compare_git_pair(self, left: str, right: str) -> None:
+        self.left_edit.setText(left)
+        self.right_edit.setText(right)
+        self.start_compare()
+
+    def open_sqlite_diff(self) -> None:
+        from .dialogs_ext import SqliteDiffDialog
+
+        SqliteDiffDialog(self).exec()
 
     def _build_actions(self) -> None:
         menubar = self.menuBar()
@@ -291,6 +365,9 @@ class MainWindow(QMainWindow):
         ops_menu.addSeparator()
         add(ops_menu, tr("合并当前差异 左→右"), "Ctrl+Right", lambda: self.merge_current("L2R"))
         add(ops_menu, tr("合并当前差异 右→左"), "Ctrl+Left", lambda: self.merge_current("R2L"))
+        add(ops_menu, tr("选择性合并差异块…"), "", self.file_view.selective_merge)
+        ops_menu.addSeparator()
+        add(ops_menu, tr("从备份恢复…"), "", self.file_view.restore_backup)
 
         add(view_menu, tr("比较选项…"), "", self.open_options)
         add(view_menu, tr("展开全部"), "", self.folder_view.left.expandAll)
@@ -307,6 +384,7 @@ class MainWindow(QMainWindow):
         add(ext_menu, tr("创建文件系统快照…"), "", self.create_snapshot_dialog)
         ext_menu.addSeparator()
         add(ext_menu, tr("比较规则…"), "", self.open_rules)
+        add(ext_menu, tr("比较模板…"), "", self.open_templates)
         add(ext_menu, tr("文件名对齐覆盖…"), "", self.open_alignment)
         add(ext_menu, tr("同步模式…"), "", self.open_sync_mode)
         add(ext_menu, tr("三向合并…"), "", self.open_merge3)
@@ -317,6 +395,9 @@ class MainWindow(QMainWindow):
                             ("注册表比较…", "registry")):
             add(ext_menu, tr(label), "", lambda value=kind: self.open_viewer(value))
         ext_menu.addSeparator()
+        add(ext_menu, tr("Git 仓库改动比较…"), "", self.open_git_diff)
+        add(ext_menu, tr("SQLite 数据比较…"), "", self.open_sqlite_diff)
+        ext_menu.addSeparator()
         add(ext_menu, tr("生成报告…"), "", self.open_report)
         add(ext_menu, tr("脚本处理器…"), "", self.open_script)
         add(ext_menu, tr("标签页工作区"), "Ctrl+T", self.open_workspace)
@@ -325,6 +406,7 @@ class MainWindow(QMainWindow):
         ext_menu.addSeparator()
         add(ext_menu, tr("查找与替换…"), "Ctrl+H", self.file_view.find_replace)
         add(ext_menu, tr("行详情"), "", self.file_view.line_detail)
+        add(ext_menu, tr("导出差异清单…"), "", self.file_view.export_diff_list)
         add(ext_menu, tr("切换书签"), "Ctrl+B", self.file_view.toggle_bookmark)
         add(ext_menu, tr("下一个书签"), "", lambda: self.file_view.goto_bookmark(True))
         ext_menu.addSeparator()
@@ -459,6 +541,7 @@ class MainWindow(QMainWindow):
 
     def _on_compare_done(self, result: CompareResult) -> None:
         self.result = result
+        self._record_recent(str(result.left_root), str(result.right_root))
         self.summary.set_stats(result.stats)
         if self._switch_view:
             if result.mode is CompareMode.FOLDERS:

@@ -55,6 +55,15 @@ KEYWORDS: dict[str, set[str]] = {
             "JOIN", "ON", "AND", "OR", "NULL", "ORDER", "BY", "GROUP", "VALUES"},
     "cpp": {"include", "define", "class", "struct", "namespace", "template", "int", "void",
             "const", "auto", "return", "if", "else", "for", "while", "new", "delete", "nullptr"},
+    "go": {"func", "package", "import", "var", "const", "type", "struct", "interface", "map",
+           "chan", "go", "defer", "if", "else", "for", "range", "return", "switch", "case",
+           "default", "nil", "true", "false", "string", "int", "int64", "error", "byte"},
+    "rust": {"fn", "let", "mut", "pub", "struct", "enum", "impl", "trait", "use", "mod", "match",
+             "if", "else", "loop", "while", "for", "in", "return", "self", "crate", "Some",
+             "None", "Ok", "Err", "i32", "u32", "usize", "str", "String", "bool", "true", "false"},
+    "json": {"true", "false", "null"},
+    "yaml": {"true", "false", "null", "yes", "no", "on", "off"},
+    "markdown": set(),
 }
 TOKEN_RE = __import__("re").compile(r'#[^\n]*|//[^\n]*|"[^"\n]*"|\'[^\'\n]*\'|\b\w+\b')
 SYNTAX_FG = {"keyword": "#c586c0", "comment": "#6a9955", "string": "#ce9178", "number": "#b5cea8"}
@@ -68,7 +77,8 @@ def language_from_name(name: str) -> str:
         ".py": "python", ".pyw": "python", ".cs": "csharp", ".java": "java",
         ".js": "javascript", ".ts": "javascript", ".jsx": "javascript", ".tsx": "javascript",
         ".sql": "sql", ".c": "cpp", ".h": "cpp", ".cpp": "cpp", ".hpp": "cpp",
-        ".cc": "cpp", ".swift": "cpp",
+        ".cc": "cpp", ".swift": "cpp", ".go": "go", ".rs": "rust",
+        ".json": "json", ".yaml": "yaml", ".yml": "yaml", ".md": "markdown", ".markdown": "markdown",
     }.get(suffix, "")
 
 
@@ -272,6 +282,17 @@ class DiffTextEdit(QPlainTextEdit):
         self.setReadOnly(False)
         self.textChanged.connect(self._on_text_changed)
 
+    # Ctrl+滚轮缩放：只发信号，由上层对比视图统一调整两侧字号并记忆
+    zoom_requested = Signal(int)
+
+    def wheelEvent(self, event) -> None:  # pragma: no cover - GUI
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta = 1 if event.angleDelta().y() > 0 else -1
+            self.zoom_requested.emit(delta)
+            event.accept()
+            return
+        super().wheelEvent(event)
+
     # ---- 内容装载 -------------------------------------------------
     def set_result(self, result: TextDiffResult) -> None:
         self._loading = True
@@ -304,8 +325,18 @@ class DiffTextEdit(QPlainTextEdit):
     def text(self) -> str:
         return self.toPlainText()
 
-    def set_word_wrap(self, enabled: bool) -> None:
-        self.setLineWrapMode(
+    def apply_editor_style(self, family: str, size_pt: int) -> None:
+        """编辑器自身样式表显式声明字体。
+
+        全局样式表的 `* { font-family/size }` 会覆盖 setFont()，
+        必须在控件样式表里重声明，编辑器字体设置与 Ctrl+滚轮缩放才真正生效。
+        """
+        self.setStyleSheet(
+            f'QPlainTextEdit {{ background: #1d2026; color: #e3e6ec;'
+            f' font-family: "{family}"; font-size: {max(6, int(size_pt))}pt; }}'
+        )
+
+    def set_word_wrap(self, enabled: bool) -> None:        self.setLineWrapMode(
             QPlainTextEdit.LineWrapMode.WidgetWidth if enabled else QPlainTextEdit.LineWrapMode.NoWrap
         )
 

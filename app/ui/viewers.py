@@ -382,9 +382,10 @@ class ImageViewer(ViewerWidget):
         except DiffScopeError as exc:
             self._error(exc)
             return
+        similarity = (f"，感知相似度 {result.similarity * 100:.1f}%" if result.similarity is not None else "")
         self.status_message.emit(
             f"图片比较：{result.width}×{result.height}，差异 {result.diff_pixels} 像素 "
-            f"({result.ratio * 100:.2f}%)，容差 {result.tolerance}"
+            f"({result.ratio * 100:.2f}%)，容差 {result.tolerance}{similarity}"
         )
 
 

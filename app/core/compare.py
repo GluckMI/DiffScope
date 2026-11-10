@@ -5,7 +5,9 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
 from typing import Callable
 
@@ -33,6 +35,57 @@ from .text_diff import normalize_text
 MAX_NODES = 100_000
 ProgressCB = Callable[[int, int, str], None]
 CancelCB = Callable[[], bool]
+
+# 内容签名进程级缓存：(路径/vfs+rel, mtime_ns, size, 规则键) → 签名
+_SIGNATURE_CACHE: dict[tuple, str] = {}
+_SIG_LOCK = threading.Lock()
+_SIGNATURE_CACHE_LIMIT = 200_000
+
+
+def _rules_key(rules) -> str:
+    if rules is None:
+        return ""
+    try:
+        return repr(sorted(rules.to_dict().items(), key=lambda kv: str(kv[0])))
+    except Exception:
+        return "dynamic"
+
+
+def _safe_signature(info: FileInfo, options: CompareOptions, rules) -> None:
+    """线程池里预计算签名；结果写入缓存，异常静默（主循环会重算并报错）。"""
+    try:
+        _content_signature(info, options, rules)
+    except Exception:
+        pass
+
+
+def _precompute_signatures(left_map: dict, right_map: dict, ctx: "_Context") -> None:
+    """目录内容较多时并行预计算两侧文件签名，主循环命中缓存避免串行读盘。
+
+    仅对本地数据源启用；远程 VFS 未必线程安全。
+    """
+    if not ctx.options.compare_content:
+        return
+    if not (isinstance(ctx.left_provider, LocalVfs) and isinstance(ctx.right_provider, LocalVfs)):
+        return
+    candidates: list[tuple[FileInfo, FileInfo]] = []
+    for key in set(left_map) & set(right_map):
+        li, ri = left_map[key], right_map[key]
+        if li.is_dir or ri.is_dir or li.error or ri.error or li.is_symlink or ri.is_symlink:
+            continue
+        if li.size != ri.size and ctx.rules is None:
+            continue  # 大小不同即判定不同，无需签名
+        candidates.append((li, ri))
+    if len(candidates) < 8:
+        return
+    workers = min(8, max(2, os.cpu_count() or 4))
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for li, ri in candidates:
+                pool.submit(_safe_signature, li, ctx.options, ctx.rules)
+                pool.submit(_safe_signature, ri, ctx.options, ctx.rules)
+    except Exception:
+        pass  # 并行失败时主循环串行重算，不影响正确性
 
 
 class _Context:
@@ -144,7 +197,29 @@ def _scan(provider: VfsProvider, rel: str, ctx: _Context) -> dict[str, FileInfo]
 
 
 def _content_signature(info: FileInfo, options: CompareOptions, rules=None) -> str:
-    """按比较规则生成内容指纹；文本规则启用时先规范化再哈希。"""
+    """按比较规则生成内容指纹；文本规则启用时先规范化再哈希。
+
+    带进程级缓存（键含 mtime/size/规则）：重复比较时未变化的文件不再重复读取与哈希。
+    """
+    cache_key = (
+        f"{info.vfs.label}:{info.rel}" if info.vfs is not None else str(info.path),
+        info.mtime_ns, info.size,
+        options.ignore_case, options.ignore_whitespace, options.max_hash_bytes,
+        _rules_key(rules),
+    )
+    cached = _SIGNATURE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    signature = _compute_signature(info, options, rules)
+    with _SIG_LOCK:
+        if len(_SIGNATURE_CACHE) >= _SIGNATURE_CACHE_LIMIT:
+            for key in list(_SIGNATURE_CACHE)[: len(_SIGNATURE_CACHE) // 2]:
+                _SIGNATURE_CACHE.pop(key, None)
+        _SIGNATURE_CACHE[cache_key] = signature
+    return signature
+
+
+def _compute_signature(info: FileInfo, options: CompareOptions, rules=None) -> str:
     if (options.ignore_case or options.ignore_whitespace or rules) and info.size <= MAX_TEXT_BYTES:
         try:
             data = info.vfs.read_bytes(info.rel) if info.vfs is not None else info.path.read_bytes()
@@ -238,6 +313,8 @@ def _build(rel: str, left: FileInfo | None, right: FileInfo | None, ctx: _Contex
 
     if ctx.alignment is not None and left_map and right_map:
         right_map = _apply_alignment(left_map, right_map, ctx.alignment)
+
+    _precompute_signatures(left_map, right_map, ctx)
 
     keys = sorted(set(left_map) | set(right_map), key=lambda k: (not _is_dir_key(k, left_map, right_map), k))
     for key in keys:

@@ -145,13 +145,40 @@ class ConfirmActionsDialog(QDialog):
         buttons = QDialogButtonBox(self)
         ok = buttons.addButton(tr("确认执行"), QDialogButtonBox.ButtonRole.AcceptRole)
         cancel = buttons.addButton(tr("取消"), QDialogButtonBox.ButtonRole.RejectRole)
+        preview = buttons.addButton(tr("导出预演报告…"), QDialogButtonBox.ButtonRole.ActionRole)
+        preview.setToolTip("把将执行的操作清单导出为 CSV（先导出审阅，再决定是否执行）")
+        preview.clicked.connect(self._export_preview)
         ok.setStyleSheet(f"background: {ACCENT}; color: white; padding: 5px 16px;")
         if danger:
             ok.setStyleSheet(f"background: {DANGER}; color: white; padding: 5px 16px;")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        self._preview_note = QLabel("")
+        self._preview_note.setStyleSheet(f"color: {MUTED};")
+        self._preview_note.setWordWrap(True)
+        layout.addWidget(self._preview_note)
         layout.addWidget(buttons)
         self._cancel = cancel
+        self._actions = actions
+
+    def _export_preview(self) -> None:
+        import csv
+
+        path, _ = QFileDialog.getSaveFileName(self, "导出预演报告", "sync-preview", "CSV (*.csv)")
+        if not path:
+            return
+        labels = {"mkdir": "创建目录", "copy": "复制覆盖", "remove": "删除"}
+        try:
+            with open(path, "w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["操作", "相对路径", "说明"])
+                for action in self._actions:
+                    writer.writerow([labels.get(action.kind, action.kind), action.rel, action.note or ""])
+        except OSError as exc:
+            self._preview_note.setText(f"导出失败：{exc}")
+            self._preview_note.setStyleSheet(f"color: {DANGER};")
+            return
+        self._preview_note.setText(f"预演报告已保存：{path}")
 
     @staticmethod
     def ask(parent, title: str, intro: str, actions, skipped=None, danger=True) -> bool:

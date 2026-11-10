@@ -158,3 +158,56 @@ def validate_session(session: Session) -> list[str]:
             message = getattr(exc, "message", str(exc))
             problems.append(f"{side}路径不可用：{message} ({raw})")
     return problems
+
+
+# ---- 比较模板：规则 + 选项（不绑定路径） --------------------------------
+def templates_dir() -> Path:
+    target = config_dir() / "templates"
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def save_template(name: str, rules, options: CompareOptions) -> Path:
+    if not name.strip():
+        raise SessionError("模板名称不能为空。")
+    payload = {
+        "app": APP_NAME,
+        "version": SESSION_VERSION,
+        "name": name.strip(),
+        "rules": rules.to_dict() if hasattr(rules, "to_dict") else {},
+        "options": options.to_dict(),
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    target = templates_dir() / f"{_safe_name(name)}.template.json"
+    _write_json(target, payload)
+    return target
+
+
+def load_template(path: Path) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except FileNotFoundError as exc:
+        raise SessionError("模板文件不存在，可能已被删除。", path=path) from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SessionError("模板文件无法读取，可能已损坏。", str(exc), path) from exc
+    if not isinstance(data, dict):
+        raise SessionError("模板文件内容不是有效的对象。", path=path)
+    return data
+
+
+def list_templates() -> list[tuple[Path, dict]]:
+    out: list[tuple[Path, dict]] = []
+    for path in sorted(templates_dir().glob("*.template.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            out.append((path, load_template(path)))
+        except SessionError:
+            continue
+    return out
+
+
+def delete_template(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError as exc:
+        raise SessionError("模板删除失败。", str(exc), path) from exc
