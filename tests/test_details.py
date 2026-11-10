@@ -1416,5 +1416,95 @@ class TestStartupResume(unittest.TestCase):
         self.assertEqual(window.stack.currentIndex(), 0)
 
 
+class TestRecentDelete(unittest.TestCase):
+    """首页「最近比较」列表支持删除单条与清空全部。"""
+
+    def setUp(self) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        self.app = QApplication.instance() or QApplication([])
+        self._tmp = tempfile.TemporaryDirectory(prefix="ds-recentdel-")
+        self.root = Path(self._tmp.name)
+        self._patches = [
+            mock.patch("app.ui.main_window.last_session_path", lambda: self.root / "no-last.json"),
+            mock.patch("app.ui.main_window.save_last_session", lambda *a, **k: None),
+            mock.patch("app.ui.main_window.show_warning", lambda *a, **k: None),
+        ]
+        for item in self._patches:
+            item.start()
+        from app.ui.main_window import MainWindow
+
+        self.window = MainWindow()
+        self.window.show()
+        self.app.processEvents()
+        # 替换为内存 stub，避免测试写入真实 ~/.diffscope/settings.json
+        self.store = {"recent_comparisons": [], "saved": False}
+
+        class _StubSettings:
+            def get(self, key, default=None):
+                return self.data.get(key, default)
+
+            def set(self, key, value):
+                self.data[key] = value
+
+            def save(self):
+                self.saved = True
+
+        self.stub = _StubSettings()
+        self.stub.data = self.store
+        self.window.settings = self.stub
+
+    def tearDown(self) -> None:
+        self.window.close()
+        for item in self._patches:
+            item.stop()
+        self._tmp.cleanup()
+
+    def _seed(self, n: int = 3) -> None:
+        for i in range(n):
+            self.window._record_recent(str(self.root / f"L{i}"), str(self.root / f"R{i}"))
+
+    def test_delete_single_entry(self) -> None:
+        self._seed(3)
+        self.assertEqual(self.window.welcome.recent_list.count(), 3)
+        self.window._delete_recent(1)  # 删除中间一条
+        items = self.store["recent_comparisons"]
+        self.assertEqual(len(items), 2)
+        self.assertTrue(all("L1" not in e["left"] for e in items))
+        self.assertEqual(self.window.welcome.recent_list.count(), 2)
+        self.assertTrue(self.stub.saved)
+
+    def test_delete_out_of_range_is_noop(self) -> None:
+        self._seed(2)
+        self.window._delete_recent(99)
+        self.assertEqual(len(self.store["recent_comparisons"]), 2)
+
+    def test_clear_all_confirmed(self) -> None:
+        self._seed(3)
+        with mock.patch("app.ui.main_window.confirm", return_value=True):
+            self.window._clear_recent()
+        self.assertEqual(self.store["recent_comparisons"], [])
+        self.assertEqual(self.window.welcome.recent_list.count(), 0)
+        self.assertFalse(self.window.welcome.recent_list.isVisible())
+        self.assertFalse(self.window.welcome.btn_clear_recent.isVisible())
+
+    def test_clear_all_cancelled_keeps_entries(self) -> None:
+        self._seed(3)
+        with mock.patch("app.ui.main_window.confirm", return_value=False):
+            self.window._clear_recent()
+        self.assertEqual(len(self.store["recent_comparisons"]), 3)
+
+    def test_context_menu_signals(self) -> None:
+        self._seed(2)
+        received = []
+        self.window.welcome.delete_recent.connect(received.append)
+        self.window.welcome.clear_recent.connect(lambda: received.append("clear"))
+        # emit 会同时触发窗口的真实处理：清空需 mock 确认框（离屏下模态弹窗会挂起）
+        with mock.patch("app.ui.main_window.confirm", return_value=True):
+            self.window.welcome.delete_recent.emit(0)
+            self.window.welcome.clear_recent.emit()
+        self.assertEqual(received, [0, "clear"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

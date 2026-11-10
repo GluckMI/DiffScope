@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QFileDialog,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -108,6 +109,8 @@ class CompareWorker(QObject):
 class WelcomePanel(QWidget):
     open_recent = Signal(str, str)
     resume_requested = Signal()
+    delete_recent = Signal(int)  # 参数：待删除条目的行号
+    clear_recent = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -153,16 +156,32 @@ class WelcomePanel(QWidget):
         tip.setStyleSheet(f"color: {MUTED};")
         tip.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(tip)
-        self.recent_caption = QLabel("最近比较（点击重开）")
+        self.recent_caption = QLabel("最近比较（点击重开 · 右键删除）")
         self.recent_caption.setStyleSheet(f"color: {MUTED};")
         self.recent_caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.recent_caption.setVisible(False)
+        self.btn_clear_recent = QPushButton("清空全部")
+        self.btn_clear_recent.setFlat(True)
+        self.btn_clear_recent.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_clear_recent.setStyleSheet(
+            f"color: {MUTED}; border: none; padding: 0 4px;"
+        )
+        self.btn_clear_recent.setToolTip("删除全部最近比较记录")
+        self.btn_clear_recent.setVisible(False)
+        self.btn_clear_recent.clicked.connect(self.clear_recent.emit)
+        cap_row = QHBoxLayout()
+        cap_row.addStretch(1)
+        cap_row.addWidget(self.recent_caption)
+        cap_row.addWidget(self.btn_clear_recent)
+        cap_row.addStretch(1)
         layout.addSpacing(12)
-        layout.addWidget(self.recent_caption)
+        layout.addLayout(cap_row)
         self.recent_list = QListWidget()
         self.recent_list.setMaximumHeight(140)
         self.recent_list.setVisible(False)
         self.recent_list.itemClicked.connect(self._emit_recent)
+        self.recent_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.recent_list.customContextMenuRequested.connect(self._recent_menu)
         layout.addWidget(self.recent_list)
 
     def set_recent(self, items: list) -> None:
@@ -171,10 +190,25 @@ class WelcomePanel(QWidget):
             left, right = str(entry.get("left", "")), str(entry.get("right", ""))
             item = QListWidgetItem(f"{left}   ⇄   {right}")
             item.setData(Qt.ItemDataRole.UserRole, (left, right))
+            item.setToolTip("点击重开该比较；右键可删除此条记录")
             self.recent_list.addItem(item)
         has = self.recent_list.count() > 0
         self.recent_list.setVisible(has)
         self.recent_caption.setVisible(has)
+        self.btn_clear_recent.setVisible(has)
+
+    def _recent_menu(self, pos) -> None:
+        item = self.recent_list.itemAt(pos)
+        menu = QMenu(self)
+        act_delete = menu.addAction("删除此条记录") if item is not None else None
+        act_clear = menu.addAction("清空全部记录")
+        chosen = menu.exec(self.recent_list.mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen is act_delete and item is not None:
+            self.delete_recent.emit(self.recent_list.row(item))
+        elif chosen is act_clear:
+            self.clear_recent.emit()
 
     def set_resume_session(self, left: str, right: str) -> None:
         """显示「恢复上次会话」按钮；路径过长时中间省略。"""
@@ -311,6 +345,8 @@ class MainWindow(QMainWindow):
         self.file_view.saved.connect(lambda: self.start_compare(switch_view=False))
         self.summary.filter_changed.connect(self.apply_status_filter)
         self.welcome.open_recent.connect(self._reopen_recent)
+        self.welcome.delete_recent.connect(self._delete_recent)
+        self.welcome.clear_recent.connect(self._clear_recent)
         self.welcome.set_recent(list(self.settings.get("recent_comparisons") or []))
 
     def _record_recent(self, left: str, right: str) -> None:
@@ -323,6 +359,35 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self.welcome.set_recent(items[:10])
+
+    def _save_recent(self, items: list) -> None:
+        self.settings.set("recent_comparisons", items)
+        try:
+            self.settings.save()
+        except Exception:
+            pass
+        self.welcome.set_recent(items)
+
+    def _delete_recent(self, row: int) -> None:
+        items = list(self.settings.get("recent_comparisons") or [])
+        if 0 <= row < len(items):
+            items.pop(row)
+            self._save_recent(items)
+            self.set_status("已删除该条比较记录")
+
+    def _clear_recent(self) -> None:
+        items = list(self.settings.get("recent_comparisons") or [])
+        if not items:
+            return
+        if not confirm(
+            self,
+            "清空比较记录",
+            f"将删除全部 {len(items)} 条最近比较记录，该操作不可撤销。",
+            danger=True,
+        ):
+            return
+        self._save_recent([])
+        self.set_status("已清空全部比较记录")
 
     def _reopen_recent(self, left: str, right: str) -> None:
         self.left_edit.setText(left)
