@@ -1328,5 +1328,93 @@ class TestCoreP4(unittest.TestCase):
         self.assertEqual(result3.stats.get("differences", 0), 1)
 
 
+class TestStartupResume(unittest.TestCase):
+    """启动不再自动恢复上次会话，改为主页一键恢复入口。"""
+
+    def setUp(self) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        self.app = QApplication.instance() or QApplication([])
+        self._tmp = tempfile.TemporaryDirectory(prefix="ds-resume-")
+        self.root = Path(self._tmp.name)
+        self.dir_a = self.root / "A"
+        self.dir_b = self.root / "B"
+        self.dir_a.mkdir()
+        self.dir_b.mkdir()
+        (self.dir_a / "x.txt").write_text("1", encoding="utf-8")
+        (self.dir_b / "x.txt").write_text("2", encoding="utf-8")
+        self.last = self.root / "_last.json"
+        self._patches = [
+            mock.patch("app.ui.main_window.last_session_path", lambda: self.last),
+            mock.patch("app.ui.main_window.save_last_session", lambda *a, **k: None),
+            mock.patch("app.ui.main_window.show_warning", lambda *a, **k: None),
+        ]
+        for item in self._patches:
+            item.start()
+
+    def tearDown(self) -> None:
+        for item in self._patches:
+            item.stop()
+        self._tmp.cleanup()
+
+    def _make_window(self):
+        from app.ui.main_window import MainWindow
+
+        window = MainWindow()
+        window.show()
+        self.app.processEvents()
+        return window
+
+    def _write_last(self, left: str, right: str) -> None:
+        import json
+
+        from app.core.models import CompareOptions
+        from app.core.session import SESSION_VERSION
+
+        payload = {
+            "app": "DiffScope",
+            "version": SESSION_VERSION,
+            "name": "启动恢复测试",
+            "mode": "folders",
+            "left": left,
+            "right": right,
+            "options": CompareOptions().to_dict(),
+            "filters": {},
+            "current_diff": 0,
+            "geometry": {},
+            "saved_at": "",
+        }
+        self.last.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    def test_startup_stays_on_welcome_with_resume_button(self) -> None:
+        self._write_last(str(self.dir_a), str(self.dir_b))
+        window = self._make_window()
+        self.addCleanup(window.close)
+        self.assertEqual(window.stack.currentIndex(), 0)  # 停在主页
+        self.assertTrue(window.welcome.btn_resume.isVisible())
+        self.assertIn("恢复上次会话", window.welcome.btn_resume.text())
+        self.assertIsNone(window.result)  # 未自动开始比较
+
+    def test_click_resume_starts_comparison(self) -> None:
+        self._write_last(str(self.dir_a), str(self.dir_b))
+        window = self._make_window()
+        self.addCleanup(window.close)
+        window.welcome.btn_resume.click()
+        for _ in range(100):
+            self.app.processEvents()
+            time.sleep(0.02)
+            if window.result is not None:
+                break
+        self.assertIsNotNone(window.result)
+        self.assertEqual(window.left_edit.text(), str(self.dir_a))
+
+    def test_invalid_last_session_hides_button(self) -> None:
+        self._write_last("", "")  # 路径缺失 → 校验失败
+        window = self._make_window()
+        self.addCleanup(window.close)
+        self.assertFalse(window.welcome.btn_resume.isVisible())
+        self.assertEqual(window.stack.currentIndex(), 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

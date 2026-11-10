@@ -107,6 +107,7 @@ class CompareWorker(QObject):
 
 class WelcomePanel(QWidget):
     open_recent = Signal(str, str)
+    resume_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -121,6 +122,16 @@ class WelcomePanel(QWidget):
         layout.addWidget(title)
         layout.addWidget(sub)
         layout.addSpacing(28)
+        # 上次会话快捷恢复入口（存在上次会话时才显示）
+        self.btn_resume = QPushButton()
+        self.btn_resume.setProperty("accent", True)
+        self.btn_resume.setMinimumWidth(420)
+        self.btn_resume.setMinimumHeight(38)
+        self.btn_resume.setToolTip("恢复上次关闭时的对比会话（含比较选项、过滤器与窗口位置）")
+        self.btn_resume.clicked.connect(self.resume_requested.emit)
+        self.btn_resume.setVisible(False)
+        layout.addWidget(self.btn_resume, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addSpacing(6)
         self.btn_folders = QPushButton("选择两个文件夹开始比较")
         self.btn_files = QPushButton("选择两个文件开始比较")
         self.btn_session = QPushButton("打开已保存的会话")
@@ -164,6 +175,15 @@ class WelcomePanel(QWidget):
         has = self.recent_list.count() > 0
         self.recent_list.setVisible(has)
         self.recent_caption.setVisible(has)
+
+    def set_resume_session(self, left: str, right: str) -> None:
+        """显示「恢复上次会话」按钮；路径过长时中间省略。"""
+
+        def clip(p: str) -> str:
+            return p if len(p) <= 44 else p[:22] + "…" + p[-20:]
+
+        self.btn_resume.setText(f"恢复上次会话：{clip(left)}  ⇄  {clip(right)}")
+        self.btn_resume.setVisible(True)
 
     def _emit_recent(self, item: QListWidgetItem) -> None:
         left, right = item.data(Qt.ItemDataRole.UserRole)
@@ -280,6 +300,7 @@ class MainWindow(QMainWindow):
         self.welcome.btn_files.clicked.connect(lambda: self.choose_pair(CompareMode.FILES))
         self.welcome.btn_session.clicked.connect(self.open_session_file)
         self.welcome.btn_recent.clicked.connect(self.show_recent_sessions)
+        self.welcome.resume_requested.connect(self._resume_last_session)
         self.folder_view.open_pair.connect(self.open_text_pair)
         self.folder_view.drop_paths.connect(self._on_folder_drop)
         self.folder_view.refresh_requested.connect(lambda: self.start_compare(switch_view=False))
@@ -833,18 +854,31 @@ class MainWindow(QMainWindow):
         if self._restored_once:
             return
         self._restored_once = True
+        # 不再自动恢复并立即比较：主页提供一键恢复入口，由用户决定是否继续
         path = last_session_path()
         if path.exists():
             try:
                 session = load_session(path)
                 if not validate_session(session) and session.left and session.right:
-                    self.restore_session(session)
+                    self.welcome.set_resume_session(session.left, session.right)
+                    self.set_status("就绪 · 可点击「恢复上次会话」继续，或选择新的比较")
                 else:
                     self.set_status("就绪 · 上次会话的路径已失效，请重新选择路径")
             except DiffScopeError:
                 self.set_status("就绪 · 上次会话无法读取，请重新选择路径")
         else:
             self.set_status("就绪 · 选择两个文件或文件夹开始比较")
+
+    def _resume_last_session(self) -> None:
+        path = last_session_path()
+        if not path.exists():
+            return
+        try:
+            session = load_session(path)
+        except DiffScopeError as exc:
+            show_error(self, exc, "恢复会话")
+            return
+        self.restore_session(session)
 
     # ---- 扩展功能 -------------------------------------------------
     def _apply_settings(self) -> None:
