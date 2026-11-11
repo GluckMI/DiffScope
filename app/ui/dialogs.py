@@ -31,7 +31,8 @@ from ..core.errors import DiffScopeError, map_os_error
 from ..core.models import CompareOptions, SyncAction, SyncReport
 from ..core.session import Session, session_dir
 from ..core.i18n import tr
-from .theme import ACCENT, DANGER, MUTED
+from .theme import ACCENT, DANGER, FONT_SECTION, MUTED, STATUS_COLORS, apply_role
+from ..core.models import DiffStatus
 
 
 def _message(parent, icon, title: str, text: str, detail: str = "") -> None:
@@ -80,9 +81,7 @@ def confirm(parent, title: str, text: str, detail: str = "", danger: bool = Fals
     box.button(QMessageBox.StandardButton.Yes).setText(tr("确认执行"))
     box.button(QMessageBox.StandardButton.No).setText(tr("取消"))
     if danger:
-        box.button(QMessageBox.StandardButton.Yes).setStyleSheet(
-            f"background: {DANGER}; color: white; padding: 5px 14px; border-radius: 4px;"
-        )
+        apply_role(box.button(QMessageBox.StandardButton.Yes), "danger-button")
     return box.exec() == QMessageBox.StandardButton.Yes
 
 
@@ -105,10 +104,13 @@ class ConfirmActionsDialog(QDialog):
         layout.setContentsMargins(16, 14, 16, 12)
         layout.setSpacing(10)
 
+        from .dialog_kit import section_bar
+
         head = QLabel(intro)
         head.setWordWrap(True)
-        head.setStyleSheet(f"color: {MUTED}; font-size: 12px;")
+        apply_role(head, "note")
         layout.addWidget(head)
+        layout.addWidget(section_bar("待执行操作"))
 
         table = QTableWidget(len(actions), 3, self)
         table.setHorizontalHeaderLabels(["操作", "相对路径", "说明"])
@@ -121,7 +123,9 @@ class ConfirmActionsDialog(QDialog):
         labels = {"mkdir": "创建目录", "copy": "复制覆盖", "remove": "删除"}
         for row, action in enumerate(actions):
             kind = labels.get(action.kind, action.kind)
-            color = "#f0a0a0" if action.kind == "remove" else ("#f0ba5e" if action.kind == "copy" else MUTED)
+            color = (STATUS_COLORS[DiffStatus.ERROR][0] if action.kind == "remove"
+                     else STATUS_COLORS[DiffStatus.MODIFIED][0] if action.kind == "copy"
+                     else str(MUTED))
             item = QTableWidgetItem(kind)
             item.setForeground(Qt.GlobalColor.white)
             item.setData(Qt.ItemDataRole.ForegroundRole, _color(color))
@@ -139,18 +143,17 @@ class ConfirmActionsDialog(QDialog):
         if danger:
             warn = QLabel("注意：删除操作优先移入系统回收站，回收站不可用时转存至备份目录；复制操作会覆盖目标文件。")
             warn.setWordWrap(True)
-            warn.setStyleSheet("color: #f0ba5e; padding: 6px 8px; background: #3f2f14; border-radius: 4px;")
+            apply_role(warn, "warning-note")
             layout.addWidget(warn)
 
+        layout.addWidget(section_bar("确认与预演"))
         buttons = QDialogButtonBox(self)
         ok = buttons.addButton(tr("确认执行"), QDialogButtonBox.ButtonRole.AcceptRole)
         cancel = buttons.addButton(tr("取消"), QDialogButtonBox.ButtonRole.RejectRole)
         preview = buttons.addButton(tr("导出预演报告…"), QDialogButtonBox.ButtonRole.ActionRole)
         preview.setToolTip("把将执行的操作清单导出为 CSV（先导出审阅，再决定是否执行）")
         preview.clicked.connect(self._export_preview)
-        ok.setStyleSheet(f"background: {ACCENT}; color: white; padding: 5px 16px;")
-        if danger:
-            ok.setStyleSheet(f"background: {DANGER}; color: white; padding: 5px 16px;")
+        apply_role(ok, "danger-button" if danger else "primary-button")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         self._preview_note = QLabel("")
@@ -202,7 +205,7 @@ class SyncResultDialog(QDialog):
             f"共 {total} 项操作，成功 {len(report.succeeded)} 项，失败 {len(report.failed)} 项"
             + ("，已取消" if report.cancelled else "")
         )
-        summary.setStyleSheet("font-size: 13px; font-weight: 600; padding: 6px;")
+        summary.setStyleSheet(f"font-size: {FONT_SECTION}px; font-weight: 600; padding: 6px;")
         layout.addWidget(summary)
 
         table = QTableWidget(len(report.failed), 2, self)

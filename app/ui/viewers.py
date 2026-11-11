@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -30,9 +31,9 @@ from ..core import formats as formats_mod
 from ..core import media as media_mod
 from ..core.errors import DiffScopeError
 from ..core.models import STATUS_META, DiffStatus
-from .theme import MUTED, STATUS_COLORS
+from .theme import FONT_BASE, STATUS_COLORS, apply_role, default_mono_font
 
-MONO = QFont("Consolas", 10)
+MONO = QFont(default_mono_font(), FONT_BASE)
 MONO.setStyleHint(QFont.StyleHint.Monospace)
 
 
@@ -58,7 +59,7 @@ class ViewerWidget(QWidget):
 
     def _label(self, text: str) -> QLabel:
         label = QLabel(text)
-        label.setStyleSheet(f"color: {MUTED}; padding: 3px;")
+        apply_role(label, "note")
         label.setWordWrap(True)
         return label
 
@@ -346,12 +347,18 @@ class ImageViewer(ViewerWidget):
         self.views: list[QLabel] = []
         for title in ("左侧", "右侧", "差异/叠加"):
             container = QWidget()
+            if title == "差异/叠加":
+                apply_role(container, "panel-card")
+                container.setProperty("dsEmphasis", True)
+                container.style().polish(container)
             box = QVBoxLayout(container)
             box.addWidget(self._label(title))
             label = QLabel("(无图片)")
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            label.setMinimumSize(200, 160)
-            label.setStyleSheet("background: #1d2026; border: 1px solid #333844;")
+            label.setMinimumSize(160, 120)
+            label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            apply_role(label, "img-surface")
+            label.setAccessibleName(f"{title}图像预览")
             box.addWidget(label, 1)
             row.addWidget(container, 1)
             self.views.append(label)

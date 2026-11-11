@@ -10,9 +10,11 @@ from PySide6.QtCore import QEvent, QTimer, QByteArray, QObject, Qt, QThread, Sig
 from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -60,8 +62,11 @@ from .dialogs import (
 )
 from .file_view import FileCompareView
 from .folder_view import FolderCompareView
-from .theme import MUTED, STYLESHEET
-from .widgets import SummaryBar
+from . import icons
+from .theme import (
+    STYLESHEET, apply_role, default_ui_font, refresh, set_custom_colors, set_theme,
+)
+from .widgets import ShortcutHints, SummaryBar
 
 
 class CompareWorker(QObject):
@@ -106,6 +111,39 @@ class CompareWorker(QObject):
             self.failed.emit(exc)
 
 
+class OnboardingCard(QFrame):
+    """一次性新手引导：非模态、可关闭，不改变任何操作入口。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        apply_role(self, "panel-card")
+        self.setVisible(False)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 12, 16, 12)
+        root.setSpacing(8)
+        title = QLabel("三步开始第一次比较")
+        apply_role(title, "section-title")
+        root.addWidget(title)
+        for text in (
+            "① 在上方工具栏选择「文件夹对比」或「文件对比」，填写左右两个路径。",
+            "② 点击「开始比较」；目录树按状态着色，双击文件可进入逐行文本对比。",
+            "③ 用 F7 / F8 逐项跳转差异，需要写盘时先确认操作清单，删除优先进入回收站。",
+        ):
+            label = QLabel(text)
+            apply_role(label, "note")
+            label.setWordWrap(True)
+            root.addWidget(label)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self.again = QCheckBox("下次启动仍显示")
+        self.again.setChecked(True)
+        self.dismiss = QPushButton("知道了")
+        self.dismiss.setProperty("accent", True)
+        row.addWidget(self.again)
+        row.addWidget(self.dismiss)
+        root.addLayout(row)
+
+
 class WelcomePanel(QWidget):
     open_recent = Signal(str, str)
     resume_requested = Signal()
@@ -116,57 +154,65 @@ class WelcomePanel(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setSpacing(8)
         title = QLabel(APP_NAME)
-        title.setStyleSheet("font-size: 34px; font-weight: 700; color: #58b1f7;")
+        apply_role(title, "hero")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sub = QLabel("文件与文件夹对比 · 差异查看 · 合并同步")
-        sub.setStyleSheet(f"font-size: 14px; color: {MUTED};")
+        apply_role(sub, "subtitle")
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
         layout.addWidget(sub)
-        layout.addSpacing(28)
-        # 上次会话快捷恢复入口（存在上次会话时才显示）
+        self.onboarding = OnboardingCard()
+        layout.addWidget(self.onboarding)
+        layout.addSpacing(16)
+        # 三级层级：主操作唯一强调色 / 次操作普通按钮 / 文字链接
+        # 上次会话快捷恢复入口（存在上次会话时才显示），用描边强调避免与主操作争抢
         self.btn_resume = QPushButton()
-        self.btn_resume.setProperty("accent", True)
+        apply_role(self.btn_resume, "resume-action")
         self.btn_resume.setMinimumWidth(420)
-        self.btn_resume.setMinimumHeight(38)
+        self.btn_resume.setMinimumHeight(36)
         self.btn_resume.setToolTip("恢复上次关闭时的对比会话（含比较选项、过滤器与窗口位置）")
         self.btn_resume.clicked.connect(self.resume_requested.emit)
         self.btn_resume.setVisible(False)
         layout.addWidget(self.btn_resume, 0, Qt.AlignmentFlag.AlignCenter)
-        layout.addSpacing(6)
         self.btn_folders = QPushButton("选择两个文件夹开始比较")
         self.btn_files = QPushButton("选择两个文件开始比较")
         self.btn_session = QPushButton("打开已保存的会话")
         self.btn_recent = QPushButton("最近的会话")
-        for button in (self.btn_folders, self.btn_files):
-            button.setProperty("accent", True)
-            button.setMinimumWidth(260)
-            button.setMinimumHeight(38)
-        for button in (self.btn_session, self.btn_recent):
-            button.setMinimumWidth(260)
-            button.setMinimumHeight(34)
+        self.btn_folders.setProperty("accent", True)
+        self.btn_folders.setMinimumWidth(300)
+        self.btn_folders.setMinimumHeight(40)
+        for button in (self.btn_files, self.btn_session, self.btn_recent):
+            button.setMinimumWidth(300)
+            button.setMinimumHeight(36)
+        # 入口顺序与文案保持原样，只调整视觉权重
         for button in (self.btn_folders, self.btn_files, self.btn_session, self.btn_recent):
             layout.addWidget(button, 0, Qt.AlignmentFlag.AlignCenter)
-        layout.addSpacing(24)
-        tip = QLabel(
-            "也可以在上方工具栏直接输入左右路径后点击“开始比较”。\n"
-            "F7 / F8 逐项跳转差异，Ctrl+F 查找，Ctrl+Shift+S 保存会话。"
-        )
-        tip.setStyleSheet(f"color: {MUTED};")
+        layout.addSpacing(16)
+        tip = QLabel("也可以在上方的工具栏直接输入左右路径，然后点击“开始比较”。")
+        apply_role(tip, "note")
+        tip.setAccessibleName("路径输入提示")
         tip.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(tip)
+        self.shortcut_hints = ShortcutHints([
+            (("Ctrl+O",), "打开"),
+            (("F7", "F8"), "差异导航"),
+            (("Ctrl+F",), "查找"),
+            (("Ctrl+Shift+S",), "保存会话"),
+        ])
+        self.shortcut_hints.setAccessibleName("快捷键提示")
+        layout.addWidget(self.shortcut_hints)
         self.recent_caption = QLabel("最近比较（点击重开 · 右键删除）")
-        self.recent_caption.setStyleSheet(f"color: {MUTED};")
+        apply_role(self.recent_caption, "muted")
         self.recent_caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.recent_caption.setVisible(False)
         self.btn_clear_recent = QPushButton("清空全部")
         self.btn_clear_recent.setFlat(True)
         self.btn_clear_recent.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_clear_recent.setStyleSheet(
-            f"color: {MUTED}; border: none; padding: 0 4px;"
-        )
+        apply_role(self.btn_clear_recent, "link-button")
         self.btn_clear_recent.setToolTip("删除全部最近比较记录")
+        self.btn_clear_recent.setAccessibleName("清空全部最近比较记录")
         self.btn_clear_recent.setVisible(False)
         self.btn_clear_recent.clicked.connect(self.clear_recent.emit)
         cap_row = QHBoxLayout()
@@ -176,6 +222,10 @@ class WelcomePanel(QWidget):
         cap_row.addStretch(1)
         layout.addSpacing(12)
         layout.addLayout(cap_row)
+        self.empty_recent = QLabel("还没有比较记录。选择两个文件或文件夹，或从上方工具栏输入路径即可开始。")
+        apply_role(self.empty_recent, "note")
+        self.empty_recent.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.empty_recent)
         self.recent_list = QListWidget()
         self.recent_list.setMaximumHeight(140)
         self.recent_list.setVisible(False)
@@ -183,6 +233,23 @@ class WelcomePanel(QWidget):
         self.recent_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.recent_list.customContextMenuRequested.connect(self._recent_menu)
         layout.addWidget(self.recent_list)
+
+    def show_onboarding(self, settings) -> None:
+        """只在真实启动入口调用；离屏测试与对话框不会弹出。"""
+        self.onboarding.setVisible(True)
+        if getattr(self, "_onboarding_bound", False):
+            return
+        self._onboarding_bound = True
+
+        def dismiss() -> None:
+            self.onboarding.setVisible(False)
+            settings.set("show_onboarding", bool(self.onboarding.again.isChecked()))
+            try:
+                settings.save()
+            except Exception:
+                pass
+
+        self.onboarding.dismiss.clicked.connect(dismiss)
 
     def set_recent(self, items: list) -> None:
         self.recent_list.clear()
@@ -196,6 +263,7 @@ class WelcomePanel(QWidget):
         self.recent_list.setVisible(has)
         self.recent_caption.setVisible(has)
         self.btn_clear_recent.setVisible(has)
+        self.empty_recent.setVisible(not has)
 
     def _recent_menu(self, pos) -> None:
         item = self.recent_list.itemAt(pos)
@@ -229,6 +297,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME}  v{__version__}  ·  文件与文件夹对比")
         self.resize(1440, 880)
+        # 低于该尺寸时由各视图自行收起侧栏 / 缩略图，保证双栏正文仍可读
+        self.setMinimumSize(1100, 700)
         self.options = CompareOptions()
         self.settings = Settings()
         self.rules = CompareRules()
@@ -249,10 +319,40 @@ class MainWindow(QMainWindow):
         self._restored_once = False
         self._build_ui()
         self._build_actions()
+        self._decorate_icons()
         self._apply_settings()
         self._apply_argv()
 
     # ---- 界面 -----------------------------------------------------
+    def _decorate_icons(self) -> None:
+        """菜单栏与顶部工具栏保持纯文字；下方页面按钮仍可用自绘线性图标。"""
+        for button, name in (
+            (self.welcome.btn_resume, "session"),
+            (self.welcome.btn_folders, "open"), (self.welcome.btn_files, "file"),
+            (self.welcome.btn_session, "session"), (self.welcome.btn_recent, "nav"),
+            (self.welcome.btn_clear_recent, "clear"),
+        ):
+            icons.bind(button, name, 18)
+        for owner, mapping in (
+            (self.folder_view, {
+                "btn_prev": "prev", "btn_next": "next", "btn_expand": "nav",
+                "btn_collapse": "nav", "btn_l2r": "merge_right", "btn_r2l": "merge_left",
+            }),
+            (self.file_view, {
+                "btn_back": "back", "btn_prev": "prev", "btn_next": "next",
+                "btn_nav": "nav", "btn_merge_l2r": "merge_right", "btn_merge_r2l": "merge_left",
+                "btn_all_l2r": "merge_right", "btn_all_r2l": "merge_left",
+                "btn_find_prev": "prev", "btn_find_next": "next",
+                "btn_recompare": "refresh", "btn_save_left": "save", "btn_save_right": "save",
+                "show_all_btn": "nav", "show_diff_btn": "diff", "show_same_btn": "nav",
+            }),
+        ):
+            for attr, name in mapping.items():
+                widget = getattr(owner, attr, None)
+                if widget is not None and hasattr(widget, "setIcon"):
+                    icons.bind(widget, name, 16)
+        # 菜单动作（含菜单栏标题）不再绑定图标，恢复纯文字
+
     def _build_ui(self) -> None:
         toolbar = self.addToolBar("主工具栏")
         toolbar.setMovable(False)
@@ -320,10 +420,11 @@ class MainWindow(QMainWindow):
         status.setSizeGripEnabled(False)
         status.addWidget(self.summary)
         self.status_label = QLabel("就绪")
-        self.status_label.setStyleSheet(f"color: {MUTED};")
+        apply_role(self.status_label, "muted")
         status.addWidget(self.status_label, 1)
         self.progress = QProgressBar()
-        self.progress.setFixedWidth(130)
+        self.progress.setMinimumWidth(110)
+        self.progress.setMaximumWidth(240)
         self.progress.setRange(0, 1)
         self.progress.setValue(1)
         self.progress.setVisible(False)
@@ -507,7 +608,9 @@ class MainWindow(QMainWindow):
 
     # ---- 状态与消息 -----------------------------------------------
     def set_status(self, text: str) -> None:
-        self.status_label.setText(text)
+        from ..core.i18n import tr_ui
+
+        self.status_label.setText(tr_ui(text))
 
     def _show_busy(self, busy: bool) -> None:
         self.progress.setVisible(busy)
@@ -949,17 +1052,26 @@ class MainWindow(QMainWindow):
     def _apply_settings(self) -> None:
         from PySide6.QtGui import QFont
 
-        from .theme import STYLESHEET, light_stylesheet
         from ..core import i18n
 
         i18n.set_language(str(self.settings.get("language")))
         self.file_view.max_text_bytes = int(self.settings.get("max_text_mb")) * 1024 * 1024
         self.file_view.formats_registry = self.formats
+        set_custom_colors(dict(self.settings.get("colors") or {}))
+        set_theme(str(self.settings.get("theme")))
         app = QApplication.instance()
         if app:
-            app.setStyleSheet(light_stylesheet() if self.settings.get("theme") == "light" else STYLESHEET)
-            app.setFont(QFont(str(self.settings.get("font_family")),
-                              int(self.settings.get("font_size"))))
+            family = str(self.settings.get("font_family")) or default_ui_font()
+            app.setFont(QFont(family, int(self.settings.get("font_size"))))
+            refresh(app)
+        icons.refresh_icons()
+        from . import effects, localize
+
+        effects.set_reduce_motion(bool(self.settings.get("reduce_motion", False)))
+        if app is not None and app.property("dsLocalizerInstalled") is None:
+            localize.install(app)
+            app.setProperty("dsLocalizerInstalled", True)
+        # 编辑器内联样式含主题色，必须在切换后重新应用
         self.file_view.apply_settings(self.settings)
         self.setAcceptDrops(True)
 
@@ -1306,10 +1418,17 @@ class MainWindow(QMainWindow):
         HelpDialog(self).exec()
 
     def toggle_theme(self) -> None:
-        self.settings.set("theme", "light" if self.settings.get("theme") == "dark" else "dark")
+        # 快捷键沿用深/浅两态切换；「跟随系统」在设置页选择，不改变既有操作习惯
+        from .theme import theme_name
+
+        current = str(self.settings.get("theme"))
+        if current == "system":
+            current = theme_name()
+        nxt = "light" if current != "light" else "dark"
+        self.settings.set("theme", nxt)
         self.settings.save()
         self._apply_settings()
-        self.set_status(f"已切换到{'浅色' if self.settings.get('theme') == 'light' else '深色'}主题")
+        self.set_status(f"已切换到{'浅色' if nxt == 'light' else '深色'}主题")
 
     def closeEvent(self, event) -> None:  # pragma: no cover - GUI 生命周期
         if not self._check_unsaved():
@@ -1343,6 +1462,13 @@ def _app_icon() -> QIcon | None:
 
 
 def launch(argv: list[str] | None = None) -> int:
+    # 4K / 125%–200% 缩放下保留系统比例，避免整数缩放造成的模糊与裁切
+    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtCore import Qt as _Qt
+
+    QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
+        _Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     icon = _app_icon()
@@ -1351,4 +1477,6 @@ def launch(argv: list[str] | None = None) -> int:
     app.setStyleSheet(STYLESHEET)
     window = MainWindow(argv)
     window.show()
+    if window.settings.get("show_onboarding", True):
+        window.welcome.show_onboarding(window.settings)
     return app.exec()

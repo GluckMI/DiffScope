@@ -196,6 +196,17 @@ def _scan(provider: VfsProvider, rel: str, ctx: _Context) -> dict[str, FileInfo]
     return result
 
 
+def invalidate_signatures(paths) -> None:
+    """写盘后失效内容签名缓存。
+
+    缓存键含 mtime_ns 与 size：复制/另存若保留了相同的时间戳与大小，旧指纹会被
+    错误复用，导致「保存/同步后重新比较」仍报差异。写操作后整体清空是最稳妥的做法
+    （批量写盘时首次清空后即为空，代价恒定），同时覆盖本地路径与 VFS 相对路径。
+    """
+    with _SIG_LOCK:
+        _SIGNATURE_CACHE.clear()
+
+
 def _content_signature(info: FileInfo, options: CompareOptions, rules=None) -> str:
     """按比较规则生成内容指纹；文本规则启用时先规范化再哈希。
 

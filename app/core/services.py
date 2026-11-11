@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -37,15 +38,17 @@ BACKUP_DIR = CONFIG_DIR / "backups"
 
 DEFAULTS: dict = {
     "theme": "dark",
-    "font_family": "Microsoft YaHei UI",
-    "font_size": 12,
-    "editor_font_family": "Consolas",
-    "editor_font_size": 10,
+    "font_family": "PingFang SC" if sys.platform == "darwin" else "Microsoft YaHei UI",
+    "font_size": 9,
+    "editor_font_family": "SF Mono" if sys.platform == "darwin" else "Consolas",
+    "editor_font_size": 9,
     "word_wrap": False,
     "syntax_highlight": True,
     "auto_recompare": True,
     "show_line_numbers": True,
     "show_minimap": True,
+    "reduce_motion": False,
+    "show_onboarding": True,
     "auto_backup": True,
     "backup_keep": 10,
     "default_compare_content": True,

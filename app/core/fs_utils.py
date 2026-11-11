@@ -24,6 +24,16 @@ CHUNK = 1024 * 1024
 _ENCODINGS = ("utf-8", "gb18030", "big5", "cp1252")
 
 
+def _invalidate_signatures(*paths) -> None:
+    """写盘后清除内容签名缓存；延迟导入避免与 compare 形成循环依赖。"""
+    try:
+        from .compare import invalidate_signatures
+
+        invalidate_signatures(paths)
+    except Exception:
+        pass  # 缓存清理失败不应影响写操作本身
+
+
 @dataclass
 class TextDocument:
     path: Path
@@ -193,6 +203,7 @@ def write_text_atomic(
             os.fsync(handle.fileno())
         os.replace(tmp_name, path)
         tmp_name = ""
+        _invalidate_signatures(path)
     except OSError as exc:
         err = map_os_error(path, exc, "写入")
         raise WriteFailure(err.message, err.detail, err.path) from exc
@@ -273,6 +284,7 @@ def _windows_recycle(path: Path) -> bool:  # pragma: no cover - 依赖 Windows S
 
 def remove_path(path: Path) -> str:
     """删除文件/目录。优先回收站；不可用或失败时移动到备份目录。返回处置说明。"""
+    _invalidate_signatures(path)
     if _windows_recycle(path):
         return "已移入回收站"
     target = _move_to_backup(path)
@@ -287,6 +299,7 @@ def copy_path(src: Path, dst: Path) -> None:
         else:
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
+        _invalidate_signatures(dst)
     except OSError as exc:
         err = map_os_error(dst, exc, "写入")
         raise WriteFailure(err.message, err.detail, err.path) from exc

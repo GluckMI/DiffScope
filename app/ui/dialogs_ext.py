@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QColorDialog,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -25,6 +26,8 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QTextBrowser,
     QVBoxLayout,
     QWidget,
@@ -39,7 +42,10 @@ from ..core.services import Settings, check_update, install_shell_integration, v
 from ..core.session import delete_template, list_templates, load_template, save_template
 from ..core.sync_modes import SyncMode
 from ..core.i18n import tr
-from .theme import MUTED
+from .theme import (
+    FONT_BASE, FONT_HELP_BODY, FONT_HELP_H2, FONT_HELP_H3, FONT_NOTE,
+    apply_role, mono_font_stack, ui_font_stack,
+)
 
 
 def _buttons(parent) -> QDialogButtonBox:
@@ -66,18 +72,26 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._shortcuts(), "快捷键")
         tabs.addTab(self._integration(), "集成")
         layout.addWidget(tabs, 1)
-        layout.addWidget(_buttons(self))
+        footer = QHBoxLayout()
+        self.btn_reset = QPushButton(tr("恢复默认外观"))
+        self.btn_reset.setToolTip("只重置主题、字体与字号，不改动比较与集成设置")
+        self.btn_reset.clicked.connect(self._reset_appearance)
+        footer.addWidget(self.btn_reset)
+        footer.addStretch(1)
+        footer.addWidget(_buttons(self))
+        layout.addLayout(footer)
 
     def _appearance(self) -> QWidget:
         page = QWidget()
         form = QFormLayout(page)
         self.theme = QComboBox()
-        self.theme.addItems(["dark", "light"])
-        self.theme.setCurrentText(self.settings.get("theme"))
+        for label, value in (("深色", "dark"), ("浅色", "light"), ("跟随系统", "system")):
+            self.theme.addItem(label, value)
+        index = self.theme.findData(str(self.settings.get("theme")))
+        self.theme.setCurrentIndex(max(0, index))
         self.language = QComboBox()
         self.language.addItems(["zh", "en"])
         self.language.setCurrentText(str(self.settings.get("language")))
-        form.addRow("界面语言（重启生效）", self.language)
         self.font = QLineEdit(self.settings.get("font_family"))
         self.font_size = QSpinBox()
         self.font_size.setRange(8, 24)
@@ -94,12 +108,82 @@ class SettingsDialog(QDialog):
         self.minimap.setChecked(bool(self.settings.get("show_minimap")))
         self.lines = QCheckBox("显示行号")
         self.lines.setChecked(bool(self.settings.get("show_line_numbers")))
-        for label, widget in (("主题", self.theme), ("界面字体", self.font), ("界面字号", self.font_size),
+        self.reduce_motion = QCheckBox("减少界面动效")
+        self.reduce_motion.setChecked(bool(self.settings.get("reduce_motion", False)))
+        self.show_onboarding = QCheckBox("下次启动显示新手引导")
+        self.show_onboarding.setChecked(bool(self.settings.get("show_onboarding", True)))
+        self._build_color_picker(form)
+        for label, widget in (("主题", self.theme), ("界面语言（重启生效）", self.language),
+                              ("界面字体", self.font), ("界面字号", self.font_size),
                               ("编辑器字体", self.editor_font), ("编辑器字号", self.editor_size)):
             form.addRow(label, widget)
-        for widget in (self.wrap, self.syntax, self.minimap, self.lines):
+        for widget in (self.wrap, self.syntax, self.minimap, self.lines,
+                       self.reduce_motion, self.show_onboarding):
             form.addRow(widget)
         return page
+
+    def _build_color_picker(self, form: QFormLayout) -> None:
+        """差异徽章自定义色：仅覆盖徽章，文字色由主题自动保证对比度。"""
+        from PySide6.QtGui import QColor
+        from .theme import DARK, _on_badge, custom_color_keys
+
+        labels = {"modified": "修改", "left_only": "仅左", "right_only": "仅右",
+                  "folder_diff": "含差异目录", "error": "错误"}
+        saved = dict(self.settings.get("colors") or {})
+        self.color_buttons: dict[str, QPushButton] = {}
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        for key in custom_color_keys():
+            button = QPushButton(labels.get(key, key))
+            default = DARK["status"][key][2]
+            self._paint_color_button(button, str(saved.get(key) or default))
+            button.clicked.connect(
+                lambda checked=False, b=button, k=key, d=default: self._pick_color(b, k, d)
+            )
+            row.addWidget(button)
+            self.color_buttons[key] = button
+        form.addRow("差异徽章配色", row)
+        note = QLabel("自定义色只作用于状态徽章，文字色自动匹配对比度；「恢复默认外观」可清除。")
+        apply_role(note, "note")
+        note.setWordWrap(True)
+        form.addRow(note)
+
+    @staticmethod
+    def _paint_color_button(button: QPushButton, color: str) -> None:
+        from .theme import _on_badge
+
+        button.setProperty("dsColorValue", color)
+        button.setStyleSheet(
+            f"QPushButton {{ background: {color}; color: {_on_badge(color)};"
+            f" border: 1px solid {color}; border-radius: 4px; padding: 4px 10px; }}"
+        )
+
+    def _pick_color(self, button: QPushButton, key: str, default: str) -> None:
+        from PySide6.QtGui import QColor
+
+        current = QColor(str(button.property("dsColorValue") or default))
+        chosen = QColorDialog.getColor(current, self, "选择差异徽章颜色")
+        if chosen.isValid():
+            self._paint_color_button(button, chosen.name())
+
+    def _reset_appearance(self) -> None:
+        """恢复默认外观：只重置本页字段，需点击「确定」才写入。"""
+        from .theme import DARK, default_mono_font, default_ui_font
+
+        self.theme.setCurrentIndex(0)
+        self.language.setCurrentText("zh")
+        self.font.setText(default_ui_font())
+        self.font_size.setValue(FONT_BASE)
+        self.editor_font.setText(default_mono_font())
+        self.editor_size.setValue(FONT_BASE)
+        self.wrap.setChecked(False)
+        self.syntax.setChecked(True)
+        self.minimap.setChecked(True)
+        self.lines.setChecked(True)
+        self.reduce_motion.setChecked(False)
+        self.show_onboarding.setChecked(True)
+        for key, button in self.color_buttons.items():
+            self._paint_color_button(button, DARK["status"][key][2])
 
     def _behavior(self) -> QWidget:
         page = QWidget()
@@ -173,7 +257,7 @@ class SettingsDialog(QDialog):
     def apply(self) -> Settings:
         data = self.settings.data
         data.update({
-            "theme": self.theme.currentText(),
+            "theme": self.theme.currentData() or "dark",
             "font_family": self.font.text(),
             "font_size": self.font_size.value(),
             "editor_font_family": self.editor_font.text(),
@@ -182,6 +266,10 @@ class SettingsDialog(QDialog):
             "syntax_highlight": self.syntax.isChecked(),
             "show_minimap": self.minimap.isChecked(),
             "show_line_numbers": self.lines.isChecked(),
+            "reduce_motion": self.reduce_motion.isChecked(),
+            "show_onboarding": self.show_onboarding.isChecked(),
+            "colors": {key: str(button.property("dsColorValue"))
+                       for key, button in self.color_buttons.items()},
             "auto_backup": self.backup.isChecked(),
             "auto_recompare": self.auto_recompare.isChecked(),
             "backup_keep": self.backup_keep.value(),
@@ -230,7 +318,7 @@ class GitDiffDialog(QDialog):
         self.list.itemDoubleClicked.connect(lambda *_: self._compare())
         layout.addWidget(self.list, 1)
         self.note = QLabel("")
-        self.note.setStyleSheet(f"color: {MUTED};")
+        apply_role(self.note, "muted")
         self.note.setWordWrap(True)
         layout.addWidget(self.note)
         buttons = QHBoxLayout()
@@ -300,7 +388,10 @@ class SqliteDiffDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(tr("SQLite 数据比较"))
         self.resize(920, 560)
+        from .dialog_kit import section_bar
+
         layout = QVBoxLayout(self)
+        layout.addWidget(section_bar("数据库文件"))
         form = QFormLayout()
         self.left_edit = QLineEdit(left)
         self.right_edit = QLineEdit(right)
@@ -327,11 +418,13 @@ class SqliteDiffDialog(QDialog):
         controls.addWidget(compare_btn)
         layout.addLayout(controls)
         self.summary = QLabel(tr("加载数据库后选择表进行比较。"))
-        self.summary.setStyleSheet(f"color: {MUTED};")
+        apply_role(self.summary, "muted")
         self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
+        layout.addWidget(section_bar("比较结果"))
         self.table = QTableWidget()
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
         layout.addWidget(self.table, 1)
 
     def _browse(self, edit: QLineEdit) -> None:
@@ -370,8 +463,15 @@ class SqliteDiffDialog(QDialog):
         except Exception as exc:
             show_error(self, exc, "比较数据表")
             return
-        names = {"only_left": "仅左侧", "only_right": "仅右侧", "modified": "已修改"}
-        colors = {"only_left": "#63c2f8", "only_right": "#c9a6f7", "modified": "#f0ba5e"}
+        from .theme import STATUS_COLORS
+        from ..core.models import DiffStatus
+
+        names = {"only_left": "< 仅左侧", "only_right": "> 仅右侧", "modified": "≠ 已修改"}
+        colors = {
+            "only_left": STATUS_COLORS[DiffStatus.LEFT_ONLY][0],
+            "only_right": STATUS_COLORS[DiffStatus.RIGHT_ONLY][0],
+            "modified": STATUS_COLORS[DiffStatus.MODIFIED][0],
+        }
 
         def brief(record) -> str:
             if record is None:
@@ -543,7 +643,10 @@ class RulesDialog(QDialog):
         self.rules = rules
         self.setWindowTitle(tr("比较规则 / 忽略不重要差异"))
         self.setMinimumWidth(560)
+        from .dialog_kit import section_bar
+
         layout = QVBoxLayout(self)
+        layout.addWidget(section_bar("新增规则"))
         bar = QHBoxLayout()
         self.language = QComboBox()
         self.language.addItems(["(无)"] + sorted(COMMENT_PRESETS))
@@ -560,6 +663,7 @@ class RulesDialog(QDialog):
         bar.addWidget(self.value, 1)
         bar.addWidget(add)
         layout.addLayout(bar)
+        layout.addWidget(section_bar("当前规则"))
         self.list = QListWidget()
         self.list.itemDoubleClicked.connect(lambda _: self._remove())
         layout.addWidget(self.list, 1)
@@ -572,10 +676,13 @@ class RulesDialog(QDialog):
         row.addWidget(preset)
         row.addStretch(1)
         layout.addLayout(row)
-        layout.addWidget(QLabel(
+        note = QLabel(
             "说明：comments/strings/regex 移除匹配片段；columns 填列号；header 填行数；"
             "replacement 填 left=>right；selection 填 起:止 行号。"
-        ))
+        )
+        note.setWordWrap(True)
+        apply_role(note, "note")
+        layout.addWidget(note)
         layout.addWidget(_buttons(self))
         self._refresh()
 
@@ -704,11 +811,17 @@ class ScriptDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(tr("脚本处理器"))
         self.resize(720, 520)
+        from .dialog_kit import section_bar
+
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(
+        hint = QLabel(
             "命令：load / compare / criteria / filter / select / folder-report / text-report / "
             "file-report / sync / snapshot / log；# 开头为注释。"
-        ))
+        )
+        hint.setWordWrap(True)
+        apply_role(hint, "note")
+        layout.addWidget(hint)
+        layout.addWidget(section_bar("脚本内容"))
         self.editor = QPlainTextEdit()
         self.editor.setPlainText(text or (
             '# 示例：比较两个目录并生成 HTML 报告\n'
@@ -718,6 +831,7 @@ class ScriptDialog(QDialog):
             'folder-report output-to:report.html\n'
         ))
         layout.addWidget(self.editor, 1)
+        layout.addWidget(section_bar("执行结果"))
         self.output = QPlainTextEdit()
         self.output.setReadOnly(True)
         self.output.setMaximumHeight(160)
@@ -755,6 +869,8 @@ class SourceDialog(QDialog):
     def __init__(self, parent, side: str = "left"):
         super().__init__(parent)
         self.setWindowTitle(f"打开数据源（{side}）")
+        from .dialog_kit import section_title
+
         layout = QVBoxLayout(self)
         form = QFormLayout()
         self.kind = QComboBox()
@@ -771,14 +887,21 @@ class SourceDialog(QDialog):
         self.token = QLineEdit()
         self.extra = QLineEdit()
         self.extra.setPlaceholderText("附加参数：region / access_key / key（SSH 私钥）")
-        for label, widget in (("类型", self.kind), ("地址", self.spec), ("用户名", self.user),
-                              ("密码", self.password), ("令牌", self.token), ("附加参数", self.extra)):
+        form.addRow(section_title("连接信息"))
+        for label, widget in (("类型", self.kind), ("地址", self.spec)):
+            form.addRow(label, widget)
+        form.addRow(section_title("凭证与参数"))
+        for label, widget in (("用户名", self.user), ("密码", self.password),
+                              ("令牌", self.token), ("附加参数", self.extra)):
             form.addRow(label, widget)
         layout.addLayout(form)
         browse = QPushButton(tr("浏览本地文件/文件夹…"))
         browse.clicked.connect(self._browse)
         layout.addWidget(browse)
-        layout.addWidget(QLabel("注意：FTP/云盘/注册表会发起实际连接，请确认凭证与目标位置。"))
+        caution = QLabel("注意：FTP/云盘/注册表会发起实际连接，请确认凭证与目标位置。")
+        caution.setWordWrap(True)
+        apply_role(caution, "warning-note")
+        layout.addWidget(caution)
         layout.addWidget(_buttons(self))
 
     def _browse(self) -> None:
@@ -848,37 +971,129 @@ class ReportDialog(QDialog):
         return fmt, Path(self.path.text()), self.linked.isChecked()
 
 
+def _help_css() -> str:
+    """帮助正文的 HTML 样式跟随主题，避免深色主题下出现深底深字。"""
+    from .theme import c
+
+    return f"""
+<style>
+body{{font-family:{ui_font_stack()};font-size:{FONT_HELP_BODY}px;line-height:1.65;
+     color:{c('text')};background:{c('panel_alt')}}}
+h2{{font-size:{FONT_HELP_H2}px;margin:0 0 10px}}
+h3{{font-size:{FONT_HELP_H3}px;margin:18px 0 6px}}
+p{{margin:6px 0}} ul{{margin:6px 0;padding-left:20px}} li{{margin:4px 0}}
+code{{font-family:{mono_font_stack()};background:{c('panel')};color:{c('text')};
+     padding:1px 5px;border-radius:4px}}
+kbd{{font-family:{mono_font_stack()};background:{c('panel')};color:{c('text')};
+    border:1px solid {c('border')};border-bottom-width:2px;border-radius:4px;
+    padding:1px 6px;font-size:{FONT_NOTE}px}}
+table{{border-collapse:collapse;width:100%}}
+td{{padding:5px 8px;border-bottom:1px solid {c('border')}}}
+</style>
+"""
+
+_HELP_SECTIONS = [
+    (
+        "快速开始", "Getting started",
+        f"<h2>DiffScope {__version__}</h2><p>文件与文件夹对比 · 差异查看 · 合并同步。</p>"
+        "<h3>三步完成第一次比较</h3><ul>"
+        "<li>在工具栏选择「文件夹对比」或「文件对比」，填写左右两个路径。</li>"
+        "<li>点击「开始比较」；目录树按状态着色，双击文件进入逐行文本对比。</li>"
+        "<li>用 <kbd>F7</kbd> / <kbd>F8</kbd> 跳转差异；写盘前先确认操作清单。</li></ul>"
+        "<p>也可以把两个文件/文件夹直接拖到窗口，或在开始页恢复上次会话。</p>",
+        f"<h2>DiffScope {__version__}</h2><p>File &amp; folder compare, diff review, merge and sync.</p>"
+        "<h3>Three steps to your first comparison</h3><ul>"
+        "<li>Choose <b>Folder Compare</b> or <b>File Compare</b> in the toolbar and enter both paths.</li>"
+        "<li>Click <b>Compare</b>; the tree is colour-coded, double-click a file for line-by-line text diff.</li>"
+        "<li>Use <kbd>F7</kbd> / <kbd>F8</kbd> to jump between differences; confirm before any write.</li></ul>"
+        "<p>You can also drop two files/folders onto the window, or resume the last session from the start page.</p>",
+    ),
+    (
+        "数据源", "Data sources",
+        "<h3>可用数据源</h3><p>本地路径、UNC、ZIP/TAR 压缩包、文件系统快照、FTP/FTPS、SFTP、"
+        "WebDAV、SVN、Amazon S3、Dropbox、OneDrive、Windows 注册表。</p>"
+        "<p>远程数据源需要凭证，连接失败会给出明确提示。文件系统快照可用于离线比较。</p>",
+        "<h3>Available sources</h3><p>Local paths, UNC, ZIP/TAR archives, filesystem snapshots, "
+        "FTP/FTPS, SFTP, WebDAV, SVN, Amazon S3, Dropbox, OneDrive and the Windows registry.</p>"
+        "<p>Remote sources need credentials; failures are reported clearly. Snapshots allow offline comparison.</p>",
+    ),
+    (
+        "比较类型", "Compare types",
+        "<h3>专用比较器</h3><p>文本、文件夹、表格（CSV/TSV/HTML 表格/Excel）、十六进制、图片、"
+        "MP3/FLAC/MP4/OGG 标签、exe/dll 版本信息、注册表、PDF/Word/RTF 转文本、补丁文件。</p>"
+        "<p>文本比较支持逐行与行内字符级差异、语法着色、手动对齐、显示过滤与书签。</p>",
+        "<h3>Specialised viewers</h3><p>Text, folders, tables (CSV/TSV/HTML/Excel), hex, images, "
+        "MP3/FLAC/MP4/OGG tags, exe/dll version info, registry, PDF/Word/RTF as text and patch files.</p>"
+        "<p>Text compare supports line and inline character diffs, syntax colouring, manual alignment, "
+        "display filters and bookmarks.</p>",
+    ),
+    (
+        "合并与同步", "Merge & sync",
+        "<h3>写操作始终需要确认</h3><p>两路文本合并（按块/整文件）、三向文本与文件夹合并、"
+        "单向覆盖/镜像/更新/双向同步。所有写操作都必须先确认操作清单，删除优先进入回收站，"
+        "保存前自动备份且可从备份恢复。</p>",
+        "<h3>Every write is confirmed</h3><p>Two-way text merge (by block or whole file), three-way "
+        "text and folder merge, one-way copy / mirror / update / two-way sync. Every write shows an "
+        "action list first; deletions go to the Recycle Bin, saving creates a backup that can be restored.</p>",
+    ),
+    (
+        "自动化", "Automation",
+        "<h3>命令行与脚本</h3><p><code>python cli.py --diff L R --report r.html</code><br>"
+        "<code>python cli.py --script s.txt --allow-write</code><br>"
+        "<code>python cli.py --merge BASE LEFT RIGHT OUT</code></p>"
+        "<p>退出码：0 无差异 / 1 有差异 / 2 错误 / 3 合并冲突。</p>",
+        "<h3>CLI and scripting</h3><p><code>python cli.py --diff L R --report r.html</code><br>"
+        "<code>python cli.py --script s.txt --allow-write</code><br>"
+        "<code>python cli.py --merge BASE LEFT RIGHT OUT</code></p>"
+        "<p>Exit codes: 0 no differences / 1 differences found / 2 error / 3 merge conflict.</p>",
+    ),
+    (
+        "快捷键", "Shortcuts",
+        "<h3>常用快捷键</h3><table>"
+        "<tr><td><kbd>Ctrl+O</kbd></td><td>打开对比</td></tr>"
+        "<tr><td><kbd>Ctrl+R</kbd></td><td>重新比较</td></tr>"
+        "<tr><td><kbd>Ctrl+S</kbd></td><td>保存修改</td></tr>"
+        "<tr><td><kbd>F7</kbd> / <kbd>F8</kbd></td><td>上一处 / 下一处差异</td></tr>"
+        "<tr><td><kbd>Ctrl+F</kbd> / <kbd>F3</kbd></td><td>查找 / 下一个匹配</td></tr>"
+        "<tr><td><kbd>Ctrl+B</kbd></td><td>切换书签</td></tr>"
+        "<tr><td><kbd>Ctrl+Shift+S</kbd></td><td>保存会话</td></tr>"
+        "<tr><td><kbd>Ctrl+Shift+O</kbd></td><td>打开会话文件</td></tr>"
+        "<tr><td><kbd>Ctrl+T</kbd></td><td>标签页工作区</td></tr></table>",
+        "<h3>Common shortcuts</h3><table>"
+        "<tr><td><kbd>Ctrl+O</kbd></td><td>Open comparison</td></tr>"
+        "<tr><td><kbd>Ctrl+R</kbd></td><td>Recompare</td></tr>"
+        "<tr><td><kbd>Ctrl+S</kbd></td><td>Save changes</td></tr>"
+        "<tr><td><kbd>F7</kbd> / <kbd>F8</kbd></td><td>Previous / next difference</td></tr>"
+        "<tr><td><kbd>Ctrl+F</kbd> / <kbd>F3</kbd></td><td>Find / next match</td></tr>"
+        "<tr><td><kbd>Ctrl+B</kbd></td><td>Toggle bookmark</td></tr>"
+        "<tr><td><kbd>Ctrl+Shift+S</kbd></td><td>Save session</td></tr>"
+        "<tr><td><kbd>Ctrl+Shift+O</kbd></td><td>Open session file</td></tr>"
+        "<tr><td><kbd>Ctrl+T</kbd></td><td>Tabbed workspace</td></tr></table>",
+    ),
+]
+
+
 class HelpDialog(QDialog):
+    """按任务分组的帮助；中英文各自提供完整正文，避免术语替换破坏 HTML。"""
+
     def __init__(self, parent):
         super().__init__(parent)
+        from ..core.i18n import current_language
+
         self.setWindowTitle(tr("帮助"))
-        self.resize(680, 520)
+        self.resize(720, 560)
         layout = QVBoxLayout(self)
-        browser = QTextBrowser()
-        browser.setHtml(f"""
-        <h2>DiffScope {__version__} 使用说明</h2>
-        <p>首版覆盖文件/文件夹对比，并扩展了多种专用比较器与数据源。</p>
-        <h3>数据源</h3>
-        <p>本地路径、UNC、ZIP/TAR 压缩包、文件系统快照、FTP/FTPS、SFTP、WebDAV、SVN、
-        Amazon S3、Dropbox、OneDrive、Windows 注册表。远程数据源需要凭证，连接失败会给出明确提示。</p>
-        <h3>比较类型</h3>
-        <p>文本、文件夹、表格（CSV/TSV/HTML 表格/Excel）、十六进制、图片、
-        MP3/FLAC/MP4/OGG 标签、exe/dll 版本信息、注册表、PDF/Word/RTF 转文本、补丁文件。</p>
-        <h3>合并与同步</h3>
-        <p>两路文本合并（按块/整文件）、三向文本与文件夹合并、单向覆盖/镜像/更新/双向同步，
-        所有写操作都必须先确认操作清单。删除优先进入回收站。</p>
-        <h3>自动化</h3>
-        <p>命令行 <code>python cli.py --diff L R --report r.html</code>、
-        脚本 <code>python cli.py --script s.txt --allow-write</code>、
-        三向合并 <code>python cli.py --merge BASE LEFT RIGHT OUT</code>。
-        退出码：0 无差异 / 1 有差异 / 2 错误 / 3 合并冲突。</p>
-        <h3>快捷键</h3>
-        <p>Ctrl+O 打开 · Ctrl+R 刷新 · Ctrl+S 保存 · F7/F8 差异导航 · Ctrl+F 查找 ·
-        F3 下一个匹配 · Ctrl+Shift+S 保存会话 · Ctrl+Shift+O 打开会话</p>
-        """)
-        layout.addWidget(browser, 1)
+        tabs = QTabWidget()
+        english = current_language() == "en"
+        for zh_title, en_title, zh_body, en_body in _HELP_SECTIONS:
+            browser = QTextBrowser()
+            browser.setHtml(_help_css() + (en_body if english else zh_body))
+            tabs.addTab(browser, en_title if english else zh_title)
+        layout.addWidget(tabs, 1)
         box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        box.button(QDialogButtonBox.StandardButton.Close).setText(tr("关闭"))
+        box.button(QDialogButtonBox.StandardButton.Close).setText(
+            "Close" if english else tr("关闭")
+        )
         box.rejected.connect(self.reject)
         box.accepted.connect(self.accept)
         layout.addWidget(box)

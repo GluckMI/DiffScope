@@ -44,10 +44,11 @@ from .dialogs import show_error, show_info
 from .file_view import FileCompareView
 from .folder_view import FolderCompareView
 from .main_window import CompareWorker
-from .theme import MUTED, STATUS_COLORS
+from .dialog_kit import section_bar
+from .theme import FONT_BASE, STATUS_COLORS, apply_role, default_mono_font
 from .viewers import ViewerWidget, choose_viewer, create_viewer
 
-MONO = QFont("Consolas", 9)
+MONO = QFont(default_mono_font(), FONT_BASE)
 
 
 # ---------------------------------------------------------------- 缩略图 / 书签
@@ -229,6 +230,7 @@ class Merge3View(QWidget):
         self.result = None
         self.paths: list[str] = []
         layout = QVBoxLayout(self)
+        layout.addWidget(section_bar("输入与输出路径"))
         bar = QHBoxLayout()
         self.base_edit = QLineEdit()
         self.left_edit = QLineEdit()
@@ -243,6 +245,7 @@ class Merge3View(QWidget):
         load.clicked.connect(self.load_paths)
         bar.addWidget(load)
         layout.addLayout(bar)
+        layout.addWidget(section_bar("三向窗格"))
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.panes: list[QPlainTextEdit] = []
         for title in ("共同祖先", "左侧", "右侧", "合并输出"):
@@ -258,6 +261,7 @@ class Merge3View(QWidget):
             splitter.addWidget(container)
             self.panes.append(editor)
         layout.addWidget(splitter, 1)
+        layout.addWidget(section_bar("冲突处理"))
         row = QHBoxLayout()
         self.conflicts = QListWidget()
         self.conflicts.setMaximumHeight(120)
@@ -604,6 +608,7 @@ class FolderMerge3View(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
+        layout.addWidget(section_bar("输入与输出路径"))
         bar = QHBoxLayout()
         self.base_edit = QLineEdit()
         self.left_edit = QLineEdit()
@@ -614,6 +619,7 @@ class FolderMerge3View(QWidget):
             bar.addWidget(QLabel(label))
             bar.addWidget(widget, 1)
         layout.addLayout(bar)
+        layout.addWidget(section_bar("冲突策略与执行"))
         bar2 = QHBoxLayout()
         self.favor = QComboBox()
         self.favor.addItems(["(不自动解决冲突)", "left", "right", "base"])
@@ -633,7 +639,7 @@ class FolderMerge3View(QWidget):
             "双方一致变更自动合并，冲突按策略处理，执行前会列出完整操作清单。"
         )
         self.hint.setWordWrap(True)
-        self.hint.setStyleSheet(f"color: {MUTED};")
+        apply_role(self.hint, "note")
         layout.addWidget(self.hint)
 
     def run_merge(self) -> None:

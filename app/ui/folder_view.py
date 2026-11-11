@@ -33,7 +33,8 @@ from ..core.models import (
 )
 from ..core.sync import execute_sync, plan_sync
 from .dialogs import ConfirmActionsDialog, SyncResultDialog, confirm, show_error, show_info
-from .theme import BORDER, MUTED, PANEL, STATUS_COLORS
+from . import effects
+from .theme import STATUS_COLORS, apply_role, qcolor
 
 COLUMNS = (
     "名称",
@@ -163,12 +164,12 @@ class CompareTreeModel(QAbstractItemModel):
         node: CompareNode = index.internalPointer()
         col = index.column()
         status = node.status
-        fg, bg, _ = STATUS_COLORS[status]
+        fg, bg = STATUS_COLORS[status][0], STATUS_COLORS[status][1]
 
         if role == Qt.ItemDataRole.DisplayRole:
             return self._display(node, col)
         if role == Qt.ItemDataRole.ForegroundRole:
-            return QBrush(QColor(fg if col in (0, 3, 4) else MUTED))
+            return QBrush(QColor(fg) if col in (0, 3, 4) else qcolor("muted"))
         if role == Qt.ItemDataRole.BackgroundRole:
             return QBrush(QColor(bg)) if bg else None
         if role == Qt.ItemDataRole.DecorationRole and col in (0, 4):
@@ -355,19 +356,21 @@ class FolderCompareView(QWidget):
         self.left.selectionModel().selectionChanged.connect(self._on_selection_changed)
 
         self.hint = QLabel("提示：双击文件可打开文本对比；同步操作会先列出全部动作供确认。")
-        self.hint.setStyleSheet(f"color: {MUTED}; padding: 2px;")
+        apply_role(self.hint, "note")
+        self.hint.setAccessibleName("目录对比操作提示")
         root.addWidget(self.hint)
 
     def _make_tree(self, side: str) -> QTreeView:
         tree = QTreeView()
         tree.setObjectName(f"tree_{side}")
-        tree.setAlternatingRowColors(False)
+        tree.setAlternatingRowColors(True)
+        tree.setAccessibleName("左侧目录" if side == "left" else "右侧目录")
         tree.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         tree.setUniformRowHeights(True)
         tree.setIndentation(16)
-        tree.setAnimated(False)
+        tree.setAnimated(not effects.reduce_motion())
         tree.setRootIsDecorated(True)
         return tree
 
@@ -379,10 +382,7 @@ class FolderCompareView(QWidget):
         layout.setSpacing(4)
         label = QLabel(title)
         label.setObjectName(f"path_{side}")
-        label.setStyleSheet(
-            f"color: {MUTED}; background: {PANEL}; border: 1px solid {BORDER};"
-            "border-radius: 4px; padding: 6px 8px;"
-        )
+        apply_role(label, "path-label")
         label.setWordWrap(True)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         setattr(self, f"path_label_{side}", label)
@@ -391,18 +391,19 @@ class FolderCompareView(QWidget):
         return panel
 
     def _setup_header(self, tree: QTreeView, columns: tuple[int, ...]) -> None:
+        """列宽按字体度量伸缩，高分屏 / 字号放大时不挤断文件名。用户仍可手动拖宽。"""
         header = tree.header()
+        header.setMinimumSectionSize(72)
         for col in columns:
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+        unit = max(7, tree.fontMetrics().horizontalAdvance("0"))
+        name_w, size_w, time_w = unit * 32, unit * 11, unit * 18
         if 0 in columns:
-            tree.setColumnWidth(0, 260)
-            tree.setColumnWidth(1, 90)
-            tree.setColumnWidth(2, 140)
+            for col, width in ((0, name_w), (1, size_w), (2, time_w)):
+                tree.setColumnWidth(col, width)
         else:
-            tree.setColumnWidth(3, 120)
-            tree.setColumnWidth(4, 260)
-            tree.setColumnWidth(5, 90)
-            tree.setColumnWidth(6, 140)
+            for col, width in ((3, size_w + unit * 4), (4, name_w), (5, size_w), (6, time_w)):
+                tree.setColumnWidth(col, width)
 
     # ---- 数据装载 -------------------------------------------------
     def set_result(self, result: CompareResult) -> None:

@@ -13,17 +13,30 @@ from .fs_utils import format_size, format_time, write_text_atomic
 from .models import STATUS_META, CompareResult, DiffStatus, TextDiffResult
 
 CSS = """
-body{font-family:'Segoe UI','Microsoft YaHei UI',sans-serif;background:#f7f8fa;color:#222;margin:24px}
-h1{font-size:20px;margin-bottom:4px} h2{font-size:15px;margin-top:24px}
-.meta{color:#666;font-size:12px;margin-bottom:16px}
-table{border-collapse:collapse;width:100%;background:#fff;font-size:12px}
-th,td{border:1px solid #dfe2e8;padding:6px 8px;text-align:left;vertical-align:top}
-th{background:#eef1f6} tr:nth-child(even){background:#fafbfc}
-.summary span{display:inline-block;padding:4px 10px;margin:2px 6px 2px 0;border-radius:4px;color:#fff}
-a{color:#2764c4} .mono{font-family:Consolas,monospace;white-space:pre-wrap}
-.same{color:#7d8492}.modified{color:#a76b0a}.left_only{color:#1e6ea8}
-.right_only{color:#7138a8}.error{color:#b52d2d}.folder_diff{color:#a76b0a}
-.diff-add{background:#e6f4ea}.diff-del{background:#fdecea}.diff-mod{background:#fff3d6}
+:root{--brand:#145da8;--ink:#20242c;--muted:#5c6573;--line:#d7dce5;--surface:#ffffff;--page:#f4f6f9}
+body{font-family:'Segoe UI','Microsoft YaHei UI','PingFang SC',sans-serif;background:var(--page);
+     color:var(--ink);margin:32px auto;max-width:1180px;padding:0 24px;line-height:1.55}
+h1{font-size:24px;margin:0 0 8px;padding-left:14px;border-left:4px solid var(--brand);font-weight:600}
+h2{font-size:16px;margin-top:28px;margin-bottom:10px;font-weight:600}
+.meta{color:var(--muted);font-size:13px;margin-bottom:18px}
+table{border-collapse:collapse;width:100%;background:var(--surface);font-size:13px;
+      border:1px solid var(--line);border-radius:6px;overflow:hidden}
+th,td{border-bottom:1px solid var(--line);padding:8px 12px;text-align:left;vertical-align:top}
+th{background:#eef2f8;color:var(--muted);font-weight:600;border-bottom:1px solid var(--line)}
+tr:nth-child(even){background:#f7f9fc}
+.summary{margin-bottom:8px}
+.summary span{display:inline-block;padding:4px 12px;margin:2px 8px 2px 0;border-radius:6px;
+              color:var(--ink);font-weight:600;font-size:12px}
+a{color:var(--brand);text-decoration:none} a:hover{text-decoration:underline}
+.mono{font-family:'Cascadia Mono','Consolas','SF Mono',monospace;white-space:pre-wrap;font-size:12px}
+.same{color:#5c6573}.modified{color:#8a5a00}.left_only{color:#0b5f9e}
+.right_only{color:#6a3aa8}.error{color:#b3261e}.folder_diff{color:#7a5200}
+.diff-add{background:#e3f1fd}.diff-del{background:#fdeceb}.diff-mod{background:#fff2dc}
+body:after{content:'DiffScope · 文件与文件夹对比报告';display:block;margin-top:32px;padding-top:12px;
+           border-top:1px solid var(--line);color:var(--muted);font-size:12px}
+@media print{body{background:#fff;margin:0;max-width:none;padding:0}
+            table{font-size:11px}tr:nth-child(even){background:#fff}
+            a{color:var(--ink);text-decoration:none}body:after{margin-top:16px}}
 """
 
 

@@ -227,6 +227,10 @@ def execute_sync(
             elif action.kind == "acl":
                 assert action.src is not None and action.dst is not None
                 _copy_acl(action.src, action.dst)
+            # move / touch / attrs / acl 等动作不走 fs_utils 写原语，这里统一失效缓存
+            from .compare import invalidate_signatures
+
+            invalidate_signatures((action.dst, action.src))
             report.succeeded.append(action)
         except DiffScopeError as exc:
             report.failed.append((action, exc.user_message()))

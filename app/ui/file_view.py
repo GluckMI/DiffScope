@@ -27,12 +27,13 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.errors import DiffScopeError
+from ..core.i18n import tr_ui
 from ..core.fs_utils import read_text, write_text_atomic
 from ..core.merge import MergeDirection, merge_all, merge_block, rebuild
 from ..core.models import CompareOptions, DiffStatus, TextDiffResult
 from ..core.text_diff import AlignmentPoint, TextAlignments, compute_text_diff, diff_blocks
 from .dialogs import confirm, show_error, show_info
-from .theme import BORDER, CURRENT_BLOCK, MUTED, PANEL, STATUS_COLORS
+from .theme import FONT_BASE, STATUS_COLORS, apply_role, qcolor, status_key
 from .widgets import AlignmentGutter, DiffTextEdit, Minimap
 
 
@@ -127,7 +128,8 @@ class FileCompareView(QWidget):
         bar1.addWidget(self.btn_prev)
         bar1.addWidget(self.btn_next)
         self.counter = QLabel("差异 0 / 0")
-        self.counter.setStyleSheet(f"color: {MUTED}; padding: 0 6px;")
+        apply_role(self.counter, "info-strip")
+        self.counter.setAccessibleName("当前差异位置")
         bar1.addWidget(self.counter)
         bar1.addSpacing(10)
 
@@ -138,7 +140,7 @@ class FileCompareView(QWidget):
         for btn in (self.show_all_btn, self.show_diff_btn, self.show_same_btn):
             btn.setCheckable(True)
             btn.setToolTip("显示过滤：只影响显示与差异导航，不改数据；过滤状态下编辑/合并/保存暂停")
-        self.show_diff_btn.setStyleSheet(f"color: #e06c60;")
+        apply_role(self.show_diff_btn, "danger-text")
         self.show_all_btn.setChecked(True)
         self.show_group = QButtonGroup(self)
         self.show_group.setExclusive(True)
@@ -195,7 +197,8 @@ class FileCompareView(QWidget):
         self.case_box.stateChanged.connect(self._find)
         bar2.addWidget(self.case_box)
         self.match_label = QLabel("")
-        self.match_label.setStyleSheet(f"color: {MUTED};")
+        apply_role(self.match_label, "info-strip")
+        self.match_label.setAccessibleName("查找匹配数量")
         bar2.addWidget(self.match_label)
         bar2.addStretch(1)
         self.btn_recompare = QPushButton("重新比较")
@@ -212,19 +215,22 @@ class FileCompareView(QWidget):
         self.error_banner = QLabel()
         self.error_banner.setWordWrap(True)
         self.error_banner.setVisible(False)
-        self.error_banner.setStyleSheet(
-            "background: #421d22; color: #f58282; border: 1px solid #722c33;"
-            "border-radius: 4px; padding: 8px;"
-        )
+        apply_role(self.error_banner, "error-banner")
+        self.error_banner.setAccessibleName("读取错误提示")
         root.addWidget(self.error_banner)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self.splitter = splitter
+        self._splitter_ready = False
         self.left_edit = DiffTextEdit("left")
         self.right_edit = DiffTextEdit("right")
         self.left_edit.edited.connect(lambda: self._mark_dirty("left"))
         self.right_edit.edited.connect(lambda: self._mark_dirty("right"))
         self.left_panel = self._make_panel("左侧文件", self.left_edit, "left")
         self.right_panel = self._make_panel("右侧文件", self.right_edit, "right")
+        # 窄窗口下保证两侧正文仍有可读宽度，其余面板由缩放与折叠承担
+        self.left_panel.setMinimumWidth(220)
+        self.right_panel.setMinimumWidth(220)
         splitter.addWidget(self.left_panel)
         self.alignment_gutter = AlignmentGutter(self.left_edit, self.right_edit)
         self.alignment_gutter.link_requested.connect(lambda l, r: self._add_alignment_link(l, r))
@@ -243,11 +249,10 @@ class FileCompareView(QWidget):
         splitter.setStretchFactor(1, 0)
         splitter.setStretchFactor(3, 0)
         splitter.setStretchFactor(4, 0)
-        # 连线栏与缩略图不可折叠、不被挤到 0 宽
-        splitter.setCollapsible(1, False)
-        splitter.setCollapsible(3, False)
-        splitter.setCollapsible(4, False)
-        splitter.setSizes([600, 30, 600, 26, 0])
+        # 五个分栏都不可折叠；首次显示时按窗口宽度比例分配，之后保留用户手动调整
+        for index in range(5):
+            splitter.setCollapsible(index, False)
+        splitter.setSizes([500, 34, 500, 28, 0])
         root.addWidget(splitter, 1)
         self.set_minimap(self.minimap_widget)
 
@@ -259,7 +264,7 @@ class FileCompareView(QWidget):
         self.left_edit.edited.connect(self._auto_timer.start)
         self.right_edit.edited.connect(self._auto_timer.start)
         # Ctrl+滚轮缩放：两侧统一调整并记忆到设置
-        self._editor_size = 10
+        self._editor_size = FONT_BASE
         self.left_edit.zoom_requested.connect(self._apply_zoom)
         self.right_edit.zoom_requested.connect(self._apply_zoom)
 
@@ -272,30 +277,30 @@ class FileCompareView(QWidget):
 
         legend = QHBoxLayout()
         legend.setSpacing(10)
-        for text, color in (
-            ("修改内容", STATUS_COLORS[DiffStatus.MODIFIED][1]),
-            ("仅左侧有", STATUS_COLORS[DiffStatus.LEFT_ONLY][1]),
-            ("仅右侧有", STATUS_COLORS[DiffStatus.RIGHT_ONLY][1]),
+        for text, status in (
+            ("≠ 修改内容", DiffStatus.MODIFIED),
+            ("< 仅左侧有", DiffStatus.LEFT_ONLY),
+            ("> 仅右侧有", DiffStatus.RIGHT_ONLY),
         ):
             chip = QLabel(f"  {text}  ")
-            chip.setStyleSheet(f"background: {color}; color: #e6e8ee; border-radius: 3px; padding: 2px 6px;")
+            apply_role(chip, "chip", status_key(status))
             legend.addWidget(chip)
         note = QLabel("灰色空行表示该侧缺少对应内容；文本可直接编辑，保存前会再次确认。")
-        note.setStyleSheet(f"color: {MUTED};")
+        apply_role(note, "note")
         legend.addWidget(note)
         legend.addStretch(1)
         root.addLayout(legend)
 
         # 底部行内容栏：显示光标所在行在两侧的对应内容（各一行）
         info = QFrame()
-        info.setStyleSheet(f"background: {PANEL}; border: 1px solid {BORDER}; border-radius: 4px;")
+        apply_role(info, "panel-card")
         info_layout = QVBoxLayout(info)
         info_layout.setContentsMargins(8, 4, 8, 4)
         info_layout.setSpacing(2)
         self.line_info_left = QLabel("左：—")
         self.line_info_right = QLabel("右：—")
         for label in (self.line_info_left, self.line_info_right):
-            label.setStyleSheet("color: #e3e6ec; border: none;")
+            apply_role(label, "info-text")
             info_layout.addWidget(label)
         root.addWidget(info)
         self.line_info_frame = info
@@ -307,16 +312,24 @@ class FileCompareView(QWidget):
         self.right_edit.cursorPositionChanged.connect(
             lambda: self._update_line_info(self.right_edit))
 
+    def showEvent(self, event) -> None:  # pragma: no cover - GUI 生命周期
+        """首次显示时按可用宽度等分两侧正文，之后保留用户手动调整的分栏宽度。"""
+        super().showEvent(event)
+        if self._splitter_ready or self.width() < 400:
+            return
+        self._splitter_ready = True
+        gutter = self.alignment_gutter.width()
+        minimap = self.minimap_widget.width()
+        side = max(220, (self.width() - gutter - minimap - 24) // 2)
+        self.splitter.setSizes([side, gutter, side, minimap, 0])
+
     def _make_panel(self, title: str, editor: DiffTextEdit, side: str) -> QWidget:
         panel = QFrame()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
         label = QLabel(title)
-        label.setStyleSheet(
-            f"color: {MUTED}; background: {PANEL}; border: 1px solid {BORDER};"
-            "border-radius: 4px; padding: 6px 8px;"
-        )
+        apply_role(label, "path-label")
         label.setWordWrap(True)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         setattr(self, f"path_label_{side}", label)
@@ -500,13 +513,13 @@ class FileCompareView(QWidget):
 
     def _show_load_error(self, exc: DiffScopeError) -> None:
         text = exc.user_message().replace("\n", "  ")
-        self.error_banner.setText(f"[{exc.title}] {text}")
+        self.error_banner.setText(tr_ui(f"[{exc.title}] {text}"))
         self.error_banner.setVisible(True)
         self.left_edit.setPlainText("")
         self.right_edit.setPlainText("")
         self.blocks = []
         self.current_block = -1
-        self.counter.setText("差异 0 / 0")
+        self.counter.setText(tr_ui("差异 0 / 0"))
         self.line_info_left.setText("左：—")
         self.line_info_right.setText("右：—")
         self.status_message.emit(f"文本读取失败：{exc.message}")
@@ -563,7 +576,7 @@ class FileCompareView(QWidget):
             self.current_block = -1
             self.left_edit.set_current_block(set())
             self.right_edit.set_current_block(set())
-            self.counter.setText("差异 0 / 0")
+            self.counter.setText(tr_ui("差异 0 / 0"))
         self._refresh_save_buttons()
         self._refresh_nav_list()
 
@@ -591,7 +604,7 @@ class FileCompareView(QWidget):
                 return False
         self.left_edit.goto_row(first)
         self.right_edit.goto_row(first)
-        self.counter.setText(f"差异 {index + 1} / {len(self.blocks)}")
+        self.counter.setText(tr_ui(f"差异 {index + 1} / {len(self.blocks)}"))
         if self.minimap is not None:
             self.minimap.set_current(first)
         if self.result:
@@ -690,23 +703,27 @@ class FileCompareView(QWidget):
     # ---- 差异/书签侧栏 ---------------------------------------------
     def _make_nav_panel(self) -> QFrame:
         frame = QFrame()
-        frame.setStyleSheet(f"background: {PANEL}; border: 1px solid {BORDER}; border-radius: 4px;")
+        apply_role(frame, "panel-card")
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
         tabs = QTabWidget()
         self.diff_list = QListWidget()
-        self.diff_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.diff_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.diff_list.itemClicked.connect(self._nav_diff_clicked)
+        self.diff_list.itemActivated.connect(self._nav_diff_clicked)
+        self.diff_list.setAccessibleName("差异块列表")
         self.bookmark_list = QListWidget()
-        self.bookmark_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.bookmark_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.bookmark_list.itemClicked.connect(self._nav_bookmark_clicked)
+        self.bookmark_list.itemActivated.connect(self._nav_bookmark_clicked)
+        self.bookmark_list.setAccessibleName("书签列表")
         tabs.addTab(self.diff_list, "差异")
         tabs.addTab(self.bookmark_list, "书签")
         self.nav_tabs = tabs
         layout.addWidget(tabs)
-        frame.setMinimumWidth(230)
-        frame.setMaximumWidth(320)
+        frame.setMinimumWidth(200)
+        frame.setMaximumWidth(360)
         return frame
 
     _OP_STATUS = (
@@ -720,13 +737,17 @@ class FileCompareView(QWidget):
         limit = 2000
         from PySide6.QtGui import QColor
 
+        if not self.blocks:
+            self.diff_list.addItem(QListWidgetItem("✓ 两侧内容一致，没有差异块"))
+            self._refresh_bookmark_list()
+            return
         for index, rows in enumerate(self.blocks[:limit]):
             first = self.result.rows[rows[0]] if self.result and rows else None
             if first is None:
                 continue
             status = next((s for op, s, name in self._OP_STATUS if op == first.op), None)
             name = next((n for op, s, n in self._OP_STATUS if op == first.op), first.op)
-            color = QColor(STATUS_COLORS[status][0]) if status else QColor(MUTED)
+            color = QColor(STATUS_COLORS[status][0]) if status else qcolor("muted")
             label = f"{index + 1}. 左 {first.left_no or '—'} / 右 {first.right_no or '—'}  {name}"
             item = QListWidgetItem(label)
             item.setForeground(color)
@@ -749,7 +770,7 @@ class FileCompareView(QWidget):
             else:
                 left_no = row + 1
             item = QListWidgetItem(f"行 {left_no}：{text}")
-            item.setForeground(QColor(CURRENT_BLOCK))
+            item.setForeground(qcolor("current_block"))
             item.setData(Qt.ItemDataRole.UserRole, row)
             self.bookmark_list.addItem(item)
         if not self.bookmarks:
@@ -799,7 +820,9 @@ class FileCompareView(QWidget):
         family = str(self.settings.get("editor_font_family")) if self.settings else "Consolas"
         for editor in (self.left_edit, self.right_edit):
             editor.apply_editor_style(family, size)
-        label_style = f"color: #e3e6ec; border: none; font-size: {size}pt;"
+        self.minimap_widget.apply_scale(size)
+        self.alignment_gutter.apply_scale(size)
+        label_style = f"font-size: {size}pt;"
         self.line_info_left.setStyleSheet(label_style)
         self.line_info_right.setStyleSheet(label_style)
         if self.settings is not None:
@@ -880,7 +903,7 @@ class FileCompareView(QWidget):
         right_count = self.right_edit.set_query(query, case)
         self._sync_matches()
         if query:
-            self.match_label.setText(f"匹配：左 {left_count} / 右 {right_count}")
+            self.match_label.setText(tr_ui(f"匹配：左 {left_count} / 右 {right_count}"))
         else:
             self.match_label.setText("")
 
@@ -1090,7 +1113,9 @@ class FileCompareView(QWidget):
             editor.apply_editor_style(family, size)
             editor.set_word_wrap(bool(settings.get("word_wrap")))
             editor.set_line_numbers_visible(bool(settings.get("show_line_numbers")))
-        label_style = f"color: #e3e6ec; border: none; font-size: {size}pt;"
+        self.minimap_widget.apply_scale(size)
+        self.alignment_gutter.apply_scale(size)
+        label_style = f"font-size: {size}pt;"
         self.line_info_left.setStyleSheet(label_style)
         self.line_info_right.setStyleSheet(label_style)
         if self.result:

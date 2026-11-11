@@ -6,6 +6,7 @@ from PySide6.QtCore import QPoint, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
+    QFontMetrics,
     QPainter,
     QSyntaxHighlighter,
     QTextCharFormat,
@@ -26,19 +27,37 @@ from PySide6.QtWidgets import (
 
 from ..core.models import STATUS_META, DiffLine, DiffStatus, TextDiffResult
 from .theme import (
-    ACCENT,
     CURRENT_BLOCK,
+    FONT_BASE,
     INLINE_COLORS,
     LINE_COLORS,
-    LINE_NUMBER_BG,
-    LINE_NUMBER_FG,
-    MUTED,
-    PLACEHOLDER,
     STATUS_COLORS,
+    SYNTAX_FG,
+    apply_role,
+    c,
+    default_mono_font,
+    mono_font_stack,
+    qcolor,
+    status_key,
 )
 
-MONO_FONT = QFont("Consolas", 10)
+MONO_FONT = QFont(default_mono_font(), FONT_BASE)
 MONO_FONT.setStyleHint(QFont.StyleHint.Monospace)
+
+# 差异行的形状/文字冗余标识：不依赖颜色即可区分状态
+ROW_MARK = {"replace": "≠", "delete": "<", "insert": ">"}
+
+
+def set_mono_font(family: str, size_pt: int) -> None:
+    """缩放时同步更新行号栏与占位行字体，避免只放大正文导致数字裁切。"""
+    MONO_FONT.setFamily(family or default_mono_font())
+    MONO_FONT.setPointSize(max(6, int(size_pt)))
+
+
+def line_number_width(size_pt: int) -> int:
+    """行号栏宽度按字号计算：预留状态符号 + 6 位行号 + 书签/手动标记。"""
+    digits = max(6, 4 + (int(size_pt) - 10) // 6)
+    return max(64, 24 + int(size_pt) * digits // 2 + 20)
 
 KEYWORDS: dict[str, set[str]] = {
     "python": {"def", "class", "if", "else", "elif", "for", "while", "return", "import", "from",
@@ -66,7 +85,6 @@ KEYWORDS: dict[str, set[str]] = {
     "markdown": set(),
 }
 TOKEN_RE = __import__("re").compile(r'#[^\n]*|//[^\n]*|"[^"\n]*"|\'[^\'\n]*\'|\b\w+\b')
-SYNTAX_FG = {"keyword": "#c586c0", "comment": "#6a9955", "string": "#ce9178", "number": "#b5cea8"}
 
 
 def language_from_name(name: str) -> str:
@@ -155,19 +173,22 @@ class DiffHighlighter(QSyntaxHighlighter):
             if spans and deep:
                 span_fmt = QTextCharFormat()
                 span_fmt.setBackground(QColor(deep))
+                # 行内差异同时给下划线，色觉障碍下仍可识别
+                span_fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SingleUnderline)
                 for start, end in spans:
                     if end > start:
                         self.setFormat(start, end - start, span_fmt)
             if row.cosmetic and not spans:
                 faint = QTextCharFormat()
-                faint.setBackground(QColor("#3b3e47"))
+                faint.setBackground(qcolor("cosmetic_bg"))
                 self.setFormat(0, len(text), faint)
         if self.language and self.syntax_enabled:
             self._apply_syntax(text, _row_background(row, self.side) if row else "")
         for start, length in self.matches.get(index, []):
             match_fmt = QTextCharFormat()
-            match_fmt.setBackground(QColor("#f0c674"))
-            match_fmt.setForeground(QColor("#14161b"))
+            match_fmt.setBackground(qcolor("find_bg"))
+            match_fmt.setForeground(qcolor("find_fg"))
+            match_fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.DashUnderline)
             self.setFormat(start, length, match_fmt)
 
     def _apply_syntax(self, text: str, background: str) -> None:
@@ -196,14 +217,20 @@ class LineNumberArea(QWidget):
     def __init__(self, editor: "DiffTextEdit"):
         super().__init__(editor)
         self.editor = editor
-        self.setFixedWidth(64)
+        self.setFixedWidth(line_number_width(10))
 
     def sizeHint(self) -> QSize:  # pragma: no cover - GUI
         return QSize(self.width(), 0)
 
     def paintEvent(self, event) -> None:  # pragma: no cover - GUI 绘制
         painter = QPainter(self)
-        painter.fillRect(event.rect(), QColor(LINE_NUMBER_BG))
+        painter.fillRect(event.rect(), qcolor("line_number_bg"))
+        # 与卡片组件一致的右侧分隔线，消除自绘区域与全局样式的割裂
+        edge = painter.pen()
+        edge.setColor(qcolor("border"))
+        edge.setWidth(1)
+        painter.setPen(edge)
+        painter.drawLine(self.width() - 1, 0, self.width() - 1, self.height())
         edit = self.editor
         block = edit.firstVisibleBlock()
         number = block.blockNumber()
@@ -214,24 +241,33 @@ class LineNumberArea(QWidget):
         while block.isValid() and top <= event.rect().bottom():
             if block.isVisible() and bottom >= event.rect().top():
                 row = rows[number] if 0 <= number < len(rows) else None
+                mark = ""
                 if row is not None and row.is_diff:
-                    fg, bg, _ = STATUS_COLORS[_status_for_row(row, edit.side)]
-                    if bg:
-                        painter.fillRect(QRectF(0, top, 4, bottom - top), QColor(fg))
+                    status = _status_for_row(row, edit.side)
+                    fg = STATUS_COLORS[status][0]
+                    painter.fillRect(QRectF(0, top, 3, bottom - top), QColor(fg))
+                    mark = ROW_MARK.get(row.op, "≠")
+                    painter.setPen(QColor(fg))
                 elif row is not None and row.cosmetic:
-                    painter.fillRect(QRectF(0, top, 4, bottom - top), QColor("#6b7050"))
+                    painter.fillRect(QRectF(0, top, 3, bottom - top), qcolor("cosmetic_mark"))
                 label = ""
                 if row is not None:
                     value = row.left_no if edit.side == "left" else row.right_no
                     label = str(value) if value is not None else "–"
                 if row is not None and row.manual:
-                    painter.fillRect(QRectF(self.width() - 14, top + 2, 5, bottom - top - 4), QColor("#b18bea"))
+                    painter.fillRect(QRectF(self.width() - 14, top + 2, 5, bottom - top - 4), qcolor("link"))
                 if number in edit._bookmarks:
-                    painter.fillRect(QRectF(self.width() - 8, top + 2, 5, bottom - top - 4), QColor(ACCENT))
-                painter.setPen(QColor(LINE_NUMBER_FG))
+                    painter.fillRect(QRectF(self.width() - 8, top + 2, 5, bottom - top - 4), qcolor("accent"))
                 painter.setFont(MONO_FONT)
+                if mark:
+                    painter.drawText(
+                        QRectF(4, top, 14, bottom - top),
+                        Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
+                        mark,
+                    )
+                painter.setPen(qcolor("line_number_fg"))
                 painter.drawText(
-                    QRectF(8, top, self.width() - 12, bottom - top),
+                    QRectF(18, top, self.width() - 22, bottom - top),
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                     label,
                 )
@@ -274,7 +310,9 @@ class DiffTextEdit(QPlainTextEdit):
         self.setTabStopDistance(32)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.setFrameShape(QPlainTextEdit.Shape.NoFrame)
-        self.setStyleSheet("QPlainTextEdit { background: #1d2026; color: #e3e6ec; }")
+        self.setStyleSheet(
+            f'QPlainTextEdit {{ background: {c("editor_bg")}; color: {c("text")}; }}'
+        )
         self.number_area = LineNumberArea(self)
         self.highlighter = DiffHighlighter(self.document())
         self.updateRequest.connect(self._on_update_request)
@@ -326,15 +364,24 @@ class DiffTextEdit(QPlainTextEdit):
         return self.toPlainText()
 
     def apply_editor_style(self, family: str, size_pt: int) -> None:
-        """编辑器自身样式表显式声明字体。
+        """编辑器自身样式表显式声明字体（全局样式表会覆盖 setFont）。
 
-        全局样式表的 `* { font-family/size }` 会覆盖 setFont()，
-        必须在控件样式表里重声明，编辑器字体设置与 Ctrl+滚轮缩放才真正生效。
+        字号缩放同时作用于正文、行号栏、连线栏与占位行，避免放大后数字裁切。
         """
+        size = max(6, int(size_pt))
+        set_mono_font(family, size)
+        self.setFont(QFont(family or default_mono_font(), size))
         self.setStyleSheet(
-            f'QPlainTextEdit {{ background: #1d2026; color: #e3e6ec;'
-            f' font-family: "{family}"; font-size: {max(6, int(size_pt))}pt; }}'
+            f'QPlainTextEdit {{ background: {c("editor_bg")}; color: {c("text")};'
+            f' font-family: "{family or default_mono_font()}", '
+            f'{mono_font_stack(family or default_mono_font())};'
+            f' font-size: {size}pt; }}'
         )
+        self.setTabStopDistance(QFontMetrics(MONO_FONT).horizontalAdvance(" ") * 4)
+        width = line_number_width(size)
+        self.number_area.setFixedWidth(width)
+        self.setViewportMargins(width if self.number_area.isVisible() else 0, 0, 0, 0)
+        self.number_area.update()
 
     def set_word_wrap(self, enabled: bool) -> None:        self.setLineWrapMode(
             QPlainTextEdit.LineWrapMode.WidgetWidth if enabled else QPlainTextEdit.LineWrapMode.NoWrap
@@ -433,7 +480,7 @@ class DiffTextEdit(QPlainTextEdit):
             if not background:
                 flush()
                 continue
-            color = _mix(background, CURRENT_BLOCK, 0.30) if position in self._current else QColor(background)
+            color = _mix(background, str(CURRENT_BLOCK), 0.30) if position in self._current else QColor(background)
             block = doc.findBlockByNumber(position)
             if group_start is None:
                 group_start, group_color, group_end = block, color, block
@@ -485,7 +532,7 @@ class DiffTextEdit(QPlainTextEdit):
             return
         painter = QPainter(self.viewport())
         painter.setFont(MONO_FONT)
-        painter.setPen(QColor(PLACEHOLDER))
+        painter.setPen(qcolor("placeholder"))
         for index in self._placeholder:
             block = self.document().findBlockByNumber(index)
             if not block.isValid():
@@ -501,6 +548,31 @@ class DiffTextEdit(QPlainTextEdit):
         painter.end()
 
 
+class ShortcutHints(QWidget):
+    """分组键帽式快捷键提示：键名用键帽组件，说明用次要文字。"""
+
+    def __init__(self, groups: list[tuple[tuple[str, ...], str]], parent=None):
+        super().__init__(parent)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(12)
+        row.addStretch(1)
+        for index, (keys, description) in enumerate(groups):
+            if index:
+                separator = QLabel("·")
+                apply_role(separator, "note")
+                row.addWidget(separator)
+            for key in keys:
+                cap = QLabel(key)
+                apply_role(cap, "keycap")
+                cap.setAccessibleName(f"快捷键 {key}")
+                row.addWidget(cap)
+            label = QLabel(description)
+            apply_role(label, "note")
+            row.addWidget(label)
+        row.addStretch(1)
+
+
 class SummaryBar(QWidget):
     """可点击的状态汇总 / 筛选条。"""
 
@@ -513,7 +585,7 @@ class SummaryBar(QWidget):
         layout.setContentsMargins(6, 4, 6, 4)
         layout.setSpacing(6)
         title = QLabel("状态汇总")
-        title.setStyleSheet(f"color: {MUTED}; font-weight: 600;")
+        apply_role(title, "muted")
         layout.addWidget(title)
 
         self.group = QButtonGroup(self)
@@ -539,6 +611,8 @@ class SummaryBar(QWidget):
         button.setCheckable(True)
         button.setMinimumWidth(72)
         button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        apply_role(button, "status-button", status_key(key) if key is not None else "same")
+        button.setAccessibleName(f"筛选：{text}")
         ident = len(self.buttons)
         self.group.addButton(button, ident)
         self._ids[ident] = key
@@ -558,11 +632,7 @@ class SummaryBar(QWidget):
                 continue
             count = stats.get(status.value, 0)
             button.setText(f"{STATUS_META[status][0]} {count}")
-            color = STATUS_COLORS[status][2]
-            button.setStyleSheet(
-                f"QPushButton {{ border: 1px solid {color}; }}"
-                f"QPushButton:checked {{ background: {color}; color: white; }}"
-            )
+            button.setAccessibleName(f"筛选：{STATUS_META[status][0]}，共 {count} 项")
 
     def set_active(self, key) -> None:
         button = self.buttons.get(key)
@@ -578,11 +648,16 @@ class Minimap(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(26)
+        self.setFixedWidth(28)
         self.setToolTip("差异分布：点击跳转")
+        self.setAccessibleName("差异分布缩略图，点击跳转到对应行")
         self._rows: list = []
         self._total = 1
         self._current = -1
+
+    def apply_scale(self, size_pt: int) -> None:
+        """高分屏 / 字号放大时同步加宽，避免细条难以命中。"""
+        self.setFixedWidth(max(26, min(44, int(size_pt) * 2 + 8)))
 
     def set_rows(self, rows: list) -> None:
         self._rows = rows
@@ -595,7 +670,12 @@ class Minimap(QWidget):
 
     def paintEvent(self, event) -> None:  # pragma: no cover - GUI 绘制
         painter = QPainter(self)
-        painter.fillRect(event.rect(), QColor(LINE_NUMBER_BG))
+        painter.fillRect(event.rect(), qcolor("line_number_bg"))
+        edge = painter.pen()
+        edge.setColor(qcolor("border"))
+        edge.setWidth(1)
+        painter.setPen(edge)
+        painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
         height = max(2, self.height() - 4)
         # 与文档一致按枚举位置定位（过滤模式下 row.index 是原始行号，比例会错位）
         for position, row in enumerate(self._rows):
@@ -607,7 +687,7 @@ class Minimap(QWidget):
             painter.fillRect(2, y, self.width() - 4, 3, QColor(STATUS_COLORS[status][0]))
         if 0 <= self._current < self._total:
             y = 2 + int(self._current / self._total * height)
-            painter.fillRect(0, max(0, y - 1), self.width(), 3, QColor("#f0c674"))
+            painter.fillRect(0, max(0, y - 1), self.width(), 3, qcolor("find_bg"))
         painter.end()
 
     def mousePressEvent(self, event) -> None:  # pragma: no cover - GUI
@@ -634,10 +714,16 @@ class AlignmentGutter(QWidget):
         self.right_edit = right_edit
         self.links: list[tuple[int, int]] = []      # 0 基行号
         self.breaks: list[tuple[int, int]] = []
-        self.setFixedWidth(30)
+        self.setFixedWidth(34)
+        self.setToolTip("对齐连线栏：从一侧拖到另一侧建立手动对齐，同侧拖动建立断点，右键删除连线")
+        self.setAccessibleName("手动对齐连线栏")
         self.setMouseTracking(True)
         self._drag = None                            # (side, row)
         self._hover = None                           # (side, row)
+
+    def apply_scale(self, size_pt: int) -> None:
+        """连线栏宽度随字号调整，保持拖拽命中区域可用。"""
+        self.setFixedWidth(max(30, min(52, int(size_pt) * 2 + 14)))
 
     # ---- 坐标换算 -------------------------------------------------
     def _row_global_y(self, editor, row: int) -> float | None:
@@ -725,8 +811,14 @@ class AlignmentGutter(QWidget):
     # ---- 绘制 -----------------------------------------------------
     def paintEvent(self, event) -> None:  # pragma: no cover - GUI 绘制
         painter = QPainter(self)
-        painter.fillRect(event.rect(), QColor(LINE_NUMBER_BG))
+        painter.fillRect(event.rect(), qcolor("line_number_bg"))
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # 与卡片组件一致的细边框，消除自绘区域与全局样式的割裂感
+        edge = painter.pen()
+        edge.setColor(qcolor("border"))
+        edge.setWidth(1)
+        painter.setPen(edge)
+        painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
 
         def y_local(editor, row) -> float | None:
             value = self._row_global_y(editor, row)
@@ -739,7 +831,7 @@ class AlignmentGutter(QWidget):
             if y1 is None or y2 is None:
                 continue
             pen = painter.pen()
-            pen.setColor(QColor("#b18bea"))
+            pen.setColor(qcolor("link"))
             pen.setWidth(2)
             painter.setPen(pen)
             painter.drawLine(2, int(y1), self.width() - 2, int(y2))
@@ -748,7 +840,7 @@ class AlignmentGutter(QWidget):
             if y1 is None:
                 continue
             pen = painter.pen()
-            pen.setColor(QColor("#e6a445"))
+            pen.setColor(qcolor("break"))
             painter.setPen(pen)
             painter.drawLine(2, int(y1), self.width() - 2, int(y1))
         if self._drag:
@@ -761,7 +853,7 @@ class AlignmentGutter(QWidget):
                 y2 = y_local(self.left_edit if hover_side == "left" else self.right_edit, hover_row)
             if y1 is not None and y2 is not None:
                 pen = painter.pen()
-                pen.setColor(QColor("#f0c674"))
+                pen.setColor(qcolor("find_bg"))
                 pen.setStyle(Qt.PenStyle.DashLine)
                 painter.setPen(pen)
                 painter.drawLine(2, int(y1), self.width() - 2, int(y2))
