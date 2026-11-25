@@ -1506,5 +1506,137 @@ class TestRecentDelete(unittest.TestCase):
         self.assertEqual(received, [0, "clear"])
 
 
+class TestHomeNavigationAndSessionHistory(unittest.TestCase):
+    """返回主页入口，以及「会话记录」同时展示最近比较与已保存会话。"""
+
+    def setUp(self) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        self.app = QApplication.instance() or QApplication([])
+        self._tmp = tempfile.TemporaryDirectory(prefix="ds-home-")
+        self.root = Path(self._tmp.name)
+        self._patches = [
+            mock.patch("app.ui.main_window.last_session_path", lambda: self.root / "no-last.json"),
+            mock.patch("app.ui.main_window.save_last_session", lambda *a, **k: None),
+            mock.patch("app.ui.main_window.show_warning", lambda *a, **k: None),
+        ]
+        for item in self._patches:
+            item.start()
+        from app.ui.main_window import MainWindow
+
+        self.window = MainWindow()
+        self.window.show()
+        self.app.processEvents()
+        self.store = {"recent_comparisons": []}
+
+        class _StubSettings:
+            def get(self, key, default=None):
+                return self.data.get(key, default)
+
+            def set(self, key, value):
+                self.data[key] = value
+
+            def save(self):
+                pass
+
+        self.stub = _StubSettings()
+        self.stub.data = self.store
+        self.window.settings = self.stub
+
+    def tearDown(self) -> None:
+        self.window.close()
+        for item in self._patches:
+            item.stop()
+        self._tmp.cleanup()
+
+    def test_home_buttons_present_and_top_stays_text_only(self) -> None:
+        from PySide6.QtWidgets import QToolBar
+
+        self.assertEqual(self.window.btn_home.text(), "主页")
+        self.assertTrue(self.window.btn_home.icon().isNull())
+        self.assertIn("主页", self.window.folder_view.btn_home.text())
+        self.assertIn("主页", self.window.file_view.btn_home.text())
+        # 主页固定在顶部工具栏最左，会话记录按钮不再带省略号
+        toolbar = self.window.findChild(QToolBar)
+        self.assertIsNotNone(toolbar)
+        self.assertIs(toolbar.actions()[0].defaultWidget(), self.window.btn_home)
+        self.assertEqual(self.window.btn_load_session.text(), "会话记录")
+
+    def test_go_home_from_both_compare_pages(self) -> None:
+        self.store["recent_comparisons"] = [{"left": "C:/a", "right": "C:/b"}]
+        for index in (1, 2):
+            self.window.stack.setCurrentIndex(index)
+            self.window.go_home()
+            self.assertEqual(self.window.stack.currentIndex(), 0)
+        self.assertIn("已返回主页", self.window.status_label.text())
+        self.assertEqual(self.window.welcome.recent_list.count(), 1)
+        self.assertTrue(self.window.welcome.recent_list.isVisible())
+        self.assertFalse(self.window.welcome.btn_resume.isVisible())
+
+    def test_go_home_respects_unsaved_changes(self) -> None:
+        self.window.stack.setCurrentIndex(2)
+        with mock.patch.object(self.window, "_check_unsaved", return_value=False):
+            self.window.go_home()
+        self.assertEqual(self.window.stack.currentIndex(), 2)
+
+    def test_menu_has_back_to_home_action(self) -> None:
+        from PySide6.QtGui import QAction
+
+        actions = [a for a in self.window.findChildren(QAction) if a.text() == "返回主页"]
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].shortcut().toString(), "Alt+Home")
+
+    def test_session_history_combines_two_sources(self) -> None:
+        from types import SimpleNamespace
+
+        from app.ui.dialogs import RecentSessionsDialog
+
+        session = SimpleNamespace(name="demo", mode="folders",
+                                  left="C:/a", right="C:/b", saved_at="2026-11-11")
+        dialog = RecentSessionsDialog(
+            self.window,
+            [(self.root / "demo.json", session)],
+            [{"left": "C:/x", "right": "C:/y"}],
+        )
+        self.assertEqual(dialog.tabs.count(), 2)
+        self.assertEqual(dialog.recent_list.count(), 1)
+        self.assertEqual(dialog.session_list.count(), 1)
+        dialog.recent_list.setCurrentRow(0)
+        dialog._accept_current()
+        self.assertEqual(dialog.selected_recent, ("C:/x", "C:/y"))
+        dialog.close()
+
+    def test_session_history_empty_state_is_actionable(self) -> None:
+        from app.ui.dialogs import RecentSessionsDialog
+
+        dialog = RecentSessionsDialog(self.window, [], [])
+        self.assertIn("还没有比较记录", dialog.recent_list.item(0).text())
+        self.assertIn("还没有已保存的会话", dialog.session_list.item(0).text())
+        dialog.recent_list.setCurrentRow(0)
+        dialog._accept_current()
+        self.assertIsNone(dialog.selected_recent)
+        self.assertIsNone(dialog.selected)
+        dialog._save_current()
+        self.assertTrue(dialog.want_save)
+        dialog.close()
+
+    def test_show_recent_sessions_dispatches(self) -> None:
+        fake = mock.MagicMock()
+        fake.exec.return_value = True
+        fake.want_save = False
+        fake.selected_recent = ("C:/x", "C:/y")
+        fake.selected = None
+        with mock.patch("app.ui.main_window.RecentSessionsDialog", return_value=fake), \
+                mock.patch.object(self.window, "_reopen_recent") as reopen:
+            self.window.show_recent_sessions()
+        reopen.assert_called_once_with("C:/x", "C:/y")
+
+        fake.want_save = True
+        with mock.patch("app.ui.main_window.RecentSessionsDialog", return_value=fake), \
+                mock.patch.object(self.window, "save_session_as") as save:
+            self.window.show_recent_sessions()
+        save.assert_called_once_with()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

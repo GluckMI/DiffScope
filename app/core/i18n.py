@@ -191,6 +191,23 @@ _UI_EN = {
     "主工具栏": "Main toolbar",
     "Git 仓库改动比较…": "Git Repository Changes…",
     "SQLite 数据比较…": "SQLite Data Compare…",
+    # 返回主页与会话记录
+    "主页": "Home", "← 主页": "← Home", "返回主页": "Back to Home",
+    "已返回主页": "Returned to Home", "返回欢迎主页": "Back to welcome",
+    "返回欢迎主页（Alt+Home）": "Back to welcome (Alt+Home)",
+    "会话记录": "Session history",
+    "查看最近比较记录与已保存的会话（可直接重新打开）":
+        "View recent comparisons and saved sessions (open directly)",
+    "最近比较记录": "Recent comparisons", "已保存的会话": "Saved sessions",
+    "打开所选": "Open selected", "保存当前会话": "Save current session",
+    "最近比较会在完成比较时自动记录；「保存会话」会连同比较选项、过滤器与窗口位置一起保存。":
+        "Recent comparisons are recorded automatically; Save Session also keeps options, filters and window geometry.",
+    "（还没有比较记录：完成一次比较后会自动出现在这里）":
+        "(No comparisons yet — they appear here automatically after a comparison)",
+    "（还没有已保存的会话：点击「保存当前会话」即可创建）":
+        "(No saved sessions yet — click Save current session to create one)",
+    "双击或点击「打开所选」重新比较这两个路径":
+        "Double-click or use Open selected to compare these paths again",
 }
 _EN.update(_UI_EN)
 

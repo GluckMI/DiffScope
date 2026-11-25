@@ -441,16 +441,26 @@ class TestExtendedGui(unittest.TestCase):
         self.assertIsNotNone(Merge3View(window))
 
     def test_main_window_extensions(self) -> None:
+        import tempfile
+
+        from app.core.services import Settings
         from app.ui.main_window import MainWindow
 
-        window = MainWindow()
-        window.show()
-        self.assertEqual([a.text() for a in window.menuBar().actions()][-1], "扩展")
-        self.assertEqual(window.settings.get("theme"), "dark")
-        window.file_view.apply_settings(window.settings)
-        window.toggle_theme()
-        self.assertEqual(window.settings.get("theme"), "light")
-        window.toggle_theme()
+        # 主题切换会写盘，必须用临时配置：既不依赖用户当前主题，也不污染 ~/.diffscope
+        with tempfile.TemporaryDirectory(prefix="ds-theme-") as tmp:
+            settings = Settings(Path(tmp) / "settings.json")
+            with mock.patch("app.ui.main_window.Settings", return_value=settings), \
+                    mock.patch("app.ui.main_window.save_last_session", lambda *a, **k: None):
+                window = MainWindow()
+                window.show()
+                self.assertEqual([a.text() for a in window.menuBar().actions()][-1], "扩展")
+                self.assertEqual(window.settings.get("theme"), "dark")
+                window.file_view.apply_settings(window.settings)
+                window.toggle_theme()
+                self.assertEqual(window.settings.get("theme"), "light")
+                window.toggle_theme()
+                self.assertEqual(window.settings.get("theme"), "dark")
+                window.close()
 
 
 if __name__ == "__main__":

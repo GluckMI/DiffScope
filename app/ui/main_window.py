@@ -279,7 +279,10 @@ class WelcomePanel(QWidget):
             self.clear_recent.emit()
 
     def set_resume_session(self, left: str, right: str) -> None:
-        """显示「恢复上次会话」按钮；路径过长时中间省略。"""
+        """显示「恢复上次会话」按钮；路径过长时中间省略，无有效路径时隐藏。"""
+        if not (left and right):
+            self.btn_resume.setVisible(False)
+            return
 
         def clip(p: str) -> str:
             return p if len(p) <= 44 else p[:22] + "…" + p[-20:]
@@ -337,9 +340,10 @@ class MainWindow(QMainWindow):
             (self.folder_view, {
                 "btn_prev": "prev", "btn_next": "next", "btn_expand": "nav",
                 "btn_collapse": "nav", "btn_l2r": "merge_right", "btn_r2l": "merge_left",
+                "btn_home": "back",
             }),
             (self.file_view, {
-                "btn_back": "back", "btn_prev": "prev", "btn_next": "next",
+                "btn_back": "back", "btn_home": "back", "btn_prev": "prev", "btn_next": "next",
                 "btn_nav": "nav", "btn_merge_l2r": "merge_right", "btn_merge_r2l": "merge_left",
                 "btn_all_l2r": "merge_right", "btn_all_r2l": "merge_left",
                 "btn_find_prev": "prev", "btn_find_next": "next",
@@ -357,6 +361,13 @@ class MainWindow(QMainWindow):
         toolbar = self.addToolBar("主工具栏")
         toolbar.setMovable(False)
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+
+        # 主页是全局导航入口，固定在工具栏最左
+        self.btn_home = QPushButton(tr("主页"))
+        self.btn_home.setToolTip("返回欢迎主页（Alt+Home）")
+        self.btn_home.setAccessibleName("返回欢迎主页")
+        self.btn_home.clicked.connect(self.go_home)
+        toolbar.addWidget(self.btn_home)
 
         toolbar.addWidget(QLabel(tr("模式")))
         self.mode_box = QComboBox()
@@ -400,7 +411,9 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.btn_options)
         toolbar.addSeparator()
         self.btn_save_session = QPushButton(tr("保存会话"))
-        self.btn_load_session = QPushButton(tr("会话…"))
+        self.btn_load_session = QPushButton(tr("会话记录"))
+        self.btn_load_session.setToolTip("查看最近比较记录与已保存的会话（可直接重新打开）")
+        self.btn_load_session.setAccessibleName("会话记录")
         self.btn_save_session.clicked.connect(self.save_session_as)
         self.btn_load_session.clicked.connect(self.show_recent_sessions)
         toolbar.addWidget(self.btn_save_session)
@@ -443,6 +456,8 @@ class MainWindow(QMainWindow):
         self.folder_view.filter_changed.connect(self._on_folder_filter_changed)
         self.file_view.status_message.connect(self.set_status)
         self.file_view.back_requested.connect(self.back_to_folders)
+        self.folder_view.home_requested.connect(self.go_home)
+        self.file_view.home_requested.connect(self.go_home)
         self.file_view.saved.connect(lambda: self.start_compare(switch_view=False))
         self.summary.filter_changed.connect(self.apply_status_filter)
         self.welcome.open_recent.connect(self._reopen_recent)
@@ -560,6 +575,7 @@ class MainWindow(QMainWindow):
         add(view_menu, tr("展开全部"), "", self.folder_view.left.expandAll)
         add(view_menu, tr("折叠全部"), "", self.folder_view._collapse_all)
         add(view_menu, tr("返回目录对比"), "Esc", self.back_to_folders)
+        add(view_menu, tr("返回主页"), "Alt+Home", self.go_home)
         add(help_menu, tr("关于"), "", lambda: show_about(self))
         add(help_menu, tr("帮助文档"), "", self.open_help)
 
@@ -822,6 +838,30 @@ class MainWindow(QMainWindow):
             self.summary.set_stats(self.result.stats)
         self.set_status("已返回目录对比")
 
+    def go_home(self) -> None:
+        """返回欢迎主页：保留当前比较状态，刷新最近记录与「恢复上次会话」入口。"""
+        if self.stack.currentIndex() == 0:
+            self._refresh_welcome()
+            return
+        if not self._check_unsaved():
+            return
+        self.stack.setCurrentIndex(0)
+        self._refresh_welcome()
+        self.set_status("已返回主页")
+
+    def _refresh_welcome(self) -> None:
+        self.welcome.set_recent(list(self.settings.get("recent_comparisons") or []))
+        path = last_session_path()
+        if path.exists():
+            try:
+                session = load_session(path)
+                if not validate_session(session) and session.left and session.right:
+                    self.welcome.set_resume_session(session.left, session.right)
+                    return
+            except DiffScopeError:
+                pass
+        self.welcome.set_resume_session("", "")
+
     def _text_stats(self) -> dict[str, int]:
         stats = {s.value: 0 for s in DiffStatus}
         result = self.file_view.result
@@ -977,9 +1017,16 @@ class MainWindow(QMainWindow):
         self.restore_session(session)
 
     def show_recent_sessions(self) -> None:
-        sessions = list_sessions()
-        dialog = RecentSessionsDialog(self, sessions)
-        if dialog.exec() and dialog.selected:
+        """打开会话记录：最近比较记录与已保存会话都能直接重新打开。"""
+        recent = list(self.settings.get("recent_comparisons") or [])
+        dialog = RecentSessionsDialog(self, list_sessions(), recent)
+        if not dialog.exec():
+            return
+        if dialog.want_save:
+            self.save_session_as()
+        elif dialog.selected_recent:
+            self._reopen_recent(*dialog.selected_recent)
+        elif dialog.selected:
             try:
                 self.restore_session(load_session(dialog.selected))
             except DiffScopeError as exc:

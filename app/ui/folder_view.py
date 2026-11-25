@@ -258,6 +258,7 @@ class FolderCompareView(QWidget):
     status_message = Signal(str)
     filter_changed = Signal(str, object)
     sync_finished = Signal()
+    home_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -276,6 +277,12 @@ class FolderCompareView(QWidget):
 
         toolbar = QHBoxLayout()
         toolbar.setSpacing(6)
+        self.btn_home = QPushButton("← 主页")
+        self.btn_home.setToolTip("返回欢迎主页（Alt+Home）")
+        self.btn_home.setAccessibleName("返回欢迎主页")
+        self.btn_home.clicked.connect(self.home_requested.emit)
+        toolbar.addWidget(self.btn_home)
+
         self.search = QLineEdit()
         self.search.setPlaceholderText("按名称或路径筛选（支持部分匹配）")
         self.search.setClearButtonEnabled(True)

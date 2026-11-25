@@ -73,6 +73,7 @@ class FileCompareView(QWidget):
     status_message = Signal(str)
     saved = Signal()
     back_requested = Signal()
+    home_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -116,6 +117,11 @@ class FileCompareView(QWidget):
 
         bar1 = QHBoxLayout()
         bar1.setSpacing(6)
+        self.btn_home = QPushButton("← 主页")
+        self.btn_home.setToolTip("返回欢迎主页（Alt+Home）")
+        self.btn_home.setAccessibleName("返回欢迎主页")
+        self.btn_home.clicked.connect(self.home_requested.emit)
+        bar1.addWidget(self.btn_home)
         self.btn_back = QPushButton("← 返回目录")
         self.btn_back.clicked.connect(lambda: self.back_requested.emit())
         self.btn_back.setVisible(False)

@@ -19,8 +19,10 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -304,40 +306,85 @@ def choose_session_path(parent, save: bool = False) -> Path | None:
 
 
 class RecentSessionsDialog(QDialog):
-    def __init__(self, parent, sessions: list[tuple[Path, Session]]):
+    """会话记录：最近比较记录 + 已保存的会话文件，两处都可直接重新打开。
+
+    比较完成时自动写入 `recent_comparisons`，会作为「最近比较记录」列出；
+    「已保存的会话」是用户通过「保存会话」写下的 .json 文件，附带选项与过滤器。
+    """
+
+    def __init__(self, parent, sessions: list[tuple[Path, Session]],
+                 recent: list[dict] | None = None):
         super().__init__(parent)
-        self.setWindowTitle(tr("最近的会话"))
-        self.resize(560, 320)
+        self.setWindowTitle(tr("会话记录"))
+        self.resize(680, 380)
         self.selected: Path | None = None
+        self.selected_recent: tuple[str, str] | None = None
+        self.want_save = False
         layout = QVBoxLayout(self)
-        self.list = QListWidget()
+
+        hint = QLabel("最近比较会在完成比较时自动记录；「保存会话」会连同比较选项、过滤器与窗口位置一起保存。")
+        hint.setWordWrap(True)
+        apply_role(hint, "note")
+        layout.addWidget(hint)
+
+        self.tabs = QTabWidget()
+        self.recent_list = QListWidget()
+        self._recent_items: list[tuple[str, str]] = []
+        for entry in recent or []:
+            left, right = str(entry.get("left", "")), str(entry.get("right", ""))
+            if not (left and right):
+                continue
+            item = QListWidgetItem(f"{left}   ⇄   {right}")
+            item.setToolTip("双击或点击「打开所选」重新比较这两个路径")
+            self.recent_list.addItem(item)
+            self._recent_items.append((left, right))
+        if not self._recent_items:
+            self.recent_list.addItem("（还没有比较记录：完成一次比较后会自动出现在这里）")
+        self.recent_list.itemDoubleClicked.connect(self._accept_current)
+        self.tabs.addTab(self.recent_list, tr("最近比较记录"))
+
+        self.session_list = QListWidget()
         self._paths: list[Path] = []
         for path, session in sessions:
             label = f"{session.name}    [{session.mode}]"
             detail = f"    {session.left}   ↔   {session.right}    ({session.saved_at})"
-            self.list.addItem(label + "\n" + detail)
+            self.session_list.addItem(label + "\n" + detail)
             self._paths.append(path)
-        if not sessions:
-            self.list.addItem("（暂无已保存的会话）")
-        self.list.itemDoubleClicked.connect(self._accept_current)
-        layout.addWidget(self.list, 1)
+        if not self._paths:
+            self.session_list.addItem("（还没有已保存的会话：点击「保存当前会话」即可创建）")
+        self.session_list.itemDoubleClicked.connect(self._accept_current)
+        self.tabs.addTab(self.session_list, tr("已保存的会话"))
+        layout.addWidget(self.tabs, 1)
 
         row = QHBoxLayout()
-        open_btn = QPushButton(tr("打开所选会话"))
+        save_btn = QPushButton(tr("保存当前会话"))
+        save_btn.clicked.connect(self._save_current)
+        open_btn = QPushButton(tr("打开所选"))
         open_btn.setProperty("accent", True)
         open_btn.clicked.connect(self._accept_current)
         close_btn = QPushButton(tr("取消"))
         close_btn.clicked.connect(self.reject)
         row.addStretch(1)
+        row.addWidget(save_btn)
         row.addWidget(open_btn)
         row.addWidget(close_btn)
         layout.addLayout(row)
 
+    def _save_current(self) -> None:
+        self.want_save = True
+        self.accept()
+
     def _accept_current(self) -> None:
-        index = self.list.currentRow()
-        if 0 <= index < len(self._paths):
-            self.selected = self._paths[index]
-            self.accept()
+        if self.tabs.currentIndex() == 0:
+            index = self.recent_list.currentRow()
+            if 0 <= index < len(self._recent_items):
+                self.selected_recent = self._recent_items[index]
+                self.accept()
+        else:
+            index = self.session_list.currentRow()
+            if 0 <= index < len(self._paths):
+                self.selected = self._paths[index]
+                self.accept()
 
 
 def show_about(parent) -> None:
